@@ -723,4 +723,236 @@ contract BeliefMarketTest is Test {
         assertGe(feeBps, LATE_ENTRY_FEE_BASE_BPS);
         assertLe(feeBps, LATE_ENTRY_FEE_MAX_BPS);
     }
+
+    /*//////////////////////////////////////////////////////////////
+                    FIRST STAKER REWARD CAP TESTS
+    //////////////////////////////////////////////////////////////*/
+
+    function test_FirstStaker_RewardCapped() public {
+        _initializeMarket();
+
+        // Alice is first staker (pays no late entry fee)
+        uint256 amount = 1000e6;
+        vm.prank(alice);
+        uint256 alicePos = market.commitSupport(amount);
+
+        // Wait for weight to build
+        vm.warp(block.timestamp + 1 days);
+
+        // Bob stakes and pays a large late entry fee to build up SRP
+        // This creates rewards that Alice could potentially claim
+        uint256 bobAmount = 50_000e6;
+        usdc.mint(bob, bobAmount);
+        vm.prank(bob);
+        usdc.approve(address(market), bobAmount);
+        vm.prank(bob);
+        market.commitSupport(bobAmount);
+
+        // Wait past min reward duration
+        vm.warp(block.timestamp + MIN_REWARD_DURATION + 1);
+
+        // Calculate Alice's max reward cap (maxUserRewardBps of principal)
+        // maxUserRewardBps = 20000 (200%), principal = 1000e6
+        uint256 maxReward = (amount * MAX_USER_REWARD_BPS) / 10000;
+
+        // Check pending rewards are capped
+        uint256 pending = market.pendingRewards(alicePos);
+        assertLe(pending, maxReward, "First staker rewards should be capped");
+
+        // Claim and verify cap is enforced
+        vm.prank(alice);
+        uint256 claimed = market.claimRewards(alicePos);
+        assertLe(claimed, maxReward, "Claimed rewards should be capped");
+    }
+
+    function test_Author_RewardCapped() public {
+        uint256 authorCommitment = 10_000e6;
+        _initializeMarketWithAuthor(authorCommitment);
+
+        // Author pays 2% premium = $200
+        uint256 premium = (authorCommitment * AUTHOR_PREMIUM_BPS) / 10000;
+
+        // Wait for author's weight to build
+        vm.warp(block.timestamp + 5 days);
+
+        // Multiple stakers pay late entry fees to build up SRP
+        uint256 stakingAmount = 50_000e6;
+        usdc.mint(alice, stakingAmount);
+        usdc.mint(bob, stakingAmount);
+
+        vm.prank(alice);
+        usdc.approve(address(market), stakingAmount);
+        vm.prank(alice);
+        market.commitSupport(stakingAmount);
+
+        vm.warp(block.timestamp + 1 days);
+
+        vm.prank(bob);
+        usdc.approve(address(market), stakingAmount);
+        vm.prank(bob);
+        market.commitSupport(stakingAmount);
+
+        // Wait past min reward duration
+        vm.warp(block.timestamp + MIN_REWARD_DURATION + 1);
+
+        // Author's cap is based on premium paid (not principal, since they paid premium)
+        // premium = $200, maxUserRewardBps = 20000 (200%), so max = $400
+        uint256 maxRewardFromPremium = (premium * MAX_USER_REWARD_BPS) / 10000;
+
+        // Check pending rewards
+        uint256 pending = market.pendingRewards(1);
+        assertLe(pending, maxRewardFromPremium, "Author rewards should be capped by premium paid");
+    }
+
+    /*//////////////////////////////////////////////////////////////
+                        SRP CAP TESTS
+    //////////////////////////////////////////////////////////////*/
+
+    function test_SrpCapped_AtMaxBps() public {
+        _initializeMarket();
+
+        // First staker
+        vm.prank(alice);
+        market.commitSupport(10_000e6);
+
+        // Many subsequent stakers to try to accumulate fees
+        // maxSrpBps = 1000 (10%), so max SRP should be 10% of total principal
+        for (uint256 i = 0; i < 10; i++) {
+            address staker = address(uint160(100 + i));
+            usdc.mint(staker, 10_000e6);
+            vm.prank(staker);
+            usdc.approve(address(market), 10_000e6);
+            vm.prank(staker);
+            market.commitSupport(10_000e6);
+        }
+
+        // Get market state
+        MarketState memory state = market.getMarketState();
+        uint256 totalPrincipal = state.supportPrincipal + state.opposePrincipal;
+        uint256 maxSrp = (totalPrincipal * MAX_SRP_BPS) / 10000;
+
+        // SRP should not exceed maxSrpBps of total principal
+        assertLe(state.srpBalance, maxSrp, "SRP should not exceed maxSrpBps of total principal");
+    }
+
+    function test_SrpCapped_ExcessFeeRefunded() public {
+        // Use params with very low maxSrpBps to make capping easier to trigger
+        MarketParams memory customParams = MarketParams({
+            lockPeriod: LOCK_PERIOD,
+            minRewardDuration: MIN_REWARD_DURATION,
+            maxSrpBps: 100, // Only 1% max SRP
+            maxUserRewardBps: MAX_USER_REWARD_BPS,
+            lateEntryFeeBaseBps: 500, // High 5% base fee
+            lateEntryFeeMaxBps: 500,
+            lateEntryFeeScale: 1000e6,
+            authorPremiumBps: AUTHOR_PREMIUM_BPS,
+            yieldBearingEscrow: false,
+            minStake: MIN_STAKE,
+            maxStake: MAX_STAKE
+        });
+
+        market.initialize(POST_ID, address(usdc), customParams, address(0), 0);
+
+        // First staker - no fee
+        vm.prank(alice);
+        uint256 alicePos = market.commitSupport(10_000e6);
+
+        Position memory alicePosition = market.getPosition(alicePos);
+        assertEq(alicePosition.amount, 10_000e6, "First staker should have full amount");
+
+        // Second staker - would pay 5% = $500 fee
+        // But max SRP is 1% of ~$10k = $100
+        // So only $100 should go to SRP, $400 stays as principal
+        vm.prank(bob);
+        uint256 bobPos = market.commitSupport(10_000e6);
+
+        Position memory bobPosition = market.getPosition(bobPos);
+
+        // Bob would have paid $500 fee (5% of $10k)
+        // But SRP can only hold $100 (1% of $10k principal before Bob)
+        // So Bob's net should be $10k - $100 = $9,900
+        assertGt(bobPosition.amount, 10_000e6 - 500e6, "Bob should get excess fee back as principal");
+        assertEq(bobPosition.amount, 10_000e6 - 100e6, "Bob's net should be amount minus capped fee");
+
+        // Verify SRP is at its cap
+        MarketState memory state = market.getMarketState();
+        assertEq(state.srpBalance, 100e6, "SRP should be at its cap");
+    }
+
+    function test_SrpCap_MultipleDeposits() public {
+        // Use params with low maxSrpBps
+        MarketParams memory customParams = MarketParams({
+            lockPeriod: LOCK_PERIOD,
+            minRewardDuration: MIN_REWARD_DURATION,
+            maxSrpBps: 200, // 2% max SRP
+            maxUserRewardBps: MAX_USER_REWARD_BPS,
+            lateEntryFeeBaseBps: 300, // 3% base fee
+            lateEntryFeeMaxBps: 500,
+            lateEntryFeeScale: 1000e6,
+            authorPremiumBps: AUTHOR_PREMIUM_BPS,
+            yieldBearingEscrow: false,
+            minStake: MIN_STAKE,
+            maxStake: MAX_STAKE
+        });
+
+        market.initialize(POST_ID, address(usdc), customParams, address(0), 0);
+
+        // First staker
+        vm.prank(alice);
+        market.commitSupport(10_000e6);
+
+        // Second staker - should pay some fee
+        vm.prank(bob);
+        market.commitSupport(10_000e6);
+
+        MarketState memory state1 = market.getMarketState();
+        uint256 srp1 = state1.srpBalance;
+
+        // Third staker - should pay fee but may hit cap
+        vm.prank(charlie);
+        market.commitSupport(10_000e6);
+
+        MarketState memory state2 = market.getMarketState();
+        uint256 srp2 = state2.srpBalance;
+
+        // Verify SRP never exceeds cap after any deposit
+        uint256 maxSrp1 = (state1.supportPrincipal * 200) / 10000;
+        uint256 maxSrp2 = (state2.supportPrincipal * 200) / 10000;
+
+        assertLe(srp1, maxSrp1, "SRP should respect cap after second deposit");
+        assertLe(srp2, maxSrp2, "SRP should respect cap after third deposit");
+    }
+
+    function test_FirstStaker_NoPrincipalBasedCapWhenFeesPaid() public {
+        _initializeMarket();
+
+        // First staker (no fees)
+        vm.prank(alice);
+        market.commitSupport(1000e6);
+
+        vm.warp(block.timestamp + 1 days);
+
+        // Second staker pays fees
+        vm.prank(bob);
+        uint256 bobPos = market.commitSupport(5000e6);
+
+        // Get Bob's position and verify he paid fees
+        Position memory bobPosition = market.getPosition(bobPos);
+        uint256 expectedFee = 5000e6 - bobPosition.amount;
+        assertGt(expectedFee, 0, "Bob should have paid fees");
+
+        // Bob's cap should be based on fees paid (200% of fees), not principal
+        // For Bob: feesPaid > 0, so cap = feesPaid * maxUserRewardBps / BPS
+        uint256 maxRewardFromFees = (expectedFee * MAX_USER_REWARD_BPS) / 10000;
+
+        // Wait for more deposits to generate rewards
+        vm.warp(block.timestamp + 1 days);
+        vm.prank(charlie);
+        market.commitSupport(10_000e6);
+
+        vm.warp(block.timestamp + MIN_REWARD_DURATION + 1);
+
+        uint256 pending = market.pendingRewards(bobPos);
+        assertLe(pending, maxRewardFromFees, "Bob's rewards should be capped by fees paid");
+    }
 }

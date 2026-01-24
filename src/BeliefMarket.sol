@@ -298,8 +298,10 @@ contract BeliefMarket is IBeliefMarket {
         if (totalPrincipal > 0) {
             uint256 feeBps = _calculateLateEntryFeeBps(totalPrincipal);
             fee = (amount * feeBps) / BPS;
-            netAmount = amount - fee;
-            _addToSrp(fee, "late_entry");
+            // _addToSrp may cap the fee due to maxSrpBps; excess stays with user as principal
+            uint256 actualFee = _addToSrp(fee, "late_entry");
+            netAmount = amount - actualFee;
+            fee = actualFee; // Update fee to actual amount for _positionFeesPaid
         }
 
         // Update pool state
@@ -340,8 +342,9 @@ contract BeliefMarket is IBeliefMarket {
 
         // Author pays premium to SRP
         uint256 premium = (amount * params.authorPremiumBps) / BPS;
-        uint256 netAmount = amount - premium;
-        _addToSrp(premium, "author_premium");
+        // _addToSrp may cap the premium due to maxSrpBps; excess stays with author as principal
+        uint256 actualPremium = _addToSrp(premium, "author_premium");
+        uint256 netAmount = amount - actualPremium;
 
         // Update support pool
         supportPool.principal += netAmount;
@@ -363,7 +366,7 @@ contract BeliefMarket is IBeliefMarket {
 
         _positionOwners[positionId] = author;
         _userPositions[author].push(positionId);
-        _positionFeesPaid[positionId] = premium;
+        _positionFeesPaid[positionId] = actualPremium;
 
         // Snapshot reward accumulators for O(1) reward calculation
         positionRewardPerPrincipalTimePaid[positionId] = rewardPerPrincipalTime;
@@ -374,20 +377,48 @@ contract BeliefMarket is IBeliefMarket {
 
     /// @notice Add funds to SRP and update reward accumulators
     /// @dev Uses Synthetix-style O(1) accumulator pattern adapted for time-weighted stakes
-    function _addToSrp(uint256 amount, string memory source) internal {
-        srpBalance += amount;
+    /// @dev Enforces maxSrpBps cap - returns actual amount added (may be less than requested)
+    /// @param amount The amount to add to SRP
+    /// @param source Description of the fee source (for events)
+    /// @return actualAmount The actual amount added (may be capped)
+    function _addToSrp(uint256 amount, string memory source) internal returns (uint256 actualAmount) {
+        // Enforce maxSrpBps cap: SRP cannot exceed maxSrpBps of total principal
+        uint256 totalPrincipal = supportPool.principal + opposePool.principal;
 
-        uint256 totalWeight = _getTotalWeight();
-        if (totalWeight > 0) {
-            // Update accumulators for O(1) reward calculation
-            // rewardPerPrincipalTime += (amount × timestamp × RAY) / totalWeight
-            // rewardPerPrincipalPerTime += (amount × RAY) / totalWeight
-            rewardPerPrincipalTime += (amount * block.timestamp * RAY) / totalWeight;
-            rewardPerPrincipalPerTime += (amount * RAY) / totalWeight;
+        // If no principal yet (first deposit), allow the fee without cap
+        // The cap is meaningless when there's nothing to cap against
+        if (totalPrincipal == 0) {
+            actualAmount = amount;
+        } else {
+            uint256 maxSrp = (totalPrincipal * params.maxSrpBps) / BPS;
+
+            // Cap amount to not exceed maxSrp
+            if (srpBalance >= maxSrp) {
+                actualAmount = 0;
+            } else if (srpBalance + amount > maxSrp) {
+                actualAmount = maxSrp - srpBalance;
+            } else {
+                actualAmount = amount;
+            }
         }
-        // If no weight yet, funds stay in SRP for future distribution
 
-        emit SrpFunded(amount, source);
+        if (actualAmount > 0) {
+            srpBalance += actualAmount;
+
+            uint256 totalWeight = _getTotalWeight();
+            if (totalWeight > 0) {
+                // Update accumulators for O(1) reward calculation
+                // rewardPerPrincipalTime += (amount × timestamp × RAY) / totalWeight
+                // rewardPerPrincipalPerTime += (amount × RAY) / totalWeight
+                rewardPerPrincipalTime += (actualAmount * block.timestamp * RAY) / totalWeight;
+                rewardPerPrincipalPerTime += (actualAmount * RAY) / totalWeight;
+            }
+            // If no weight yet, funds stay in SRP for future distribution
+
+            emit SrpFunded(actualAmount, source);
+        }
+
+        return actualAmount;
     }
 
     /// @notice Calculate time-weighted signal for a side
@@ -434,12 +465,14 @@ contract BeliefMarket is IBeliefMarket {
     }
 
     /// @notice Calculate max reward for a position based on fees paid
-    /// @dev If position paid no fees (first staker), no cap is applied
+    /// @dev If position paid no fees (first staker/author), cap at maxUserRewardBps of principal
     function _calculateMaxUserReward(uint256 positionId) internal view returns (uint256) {
         uint256 feesPaid = _positionFeesPaid[positionId];
-        // If no fees paid (first staker), no cap on rewards
         if (feesPaid == 0) {
-            return type(uint256).max;
+            // No fees paid (first staker): cap at maxUserRewardBps of principal
+            // e.g., 20000 bps = 200% of principal, so $100 stake can earn up to $200 in rewards
+            Position memory pos = _positions[positionId];
+            return (pos.amount * params.maxUserRewardBps) / BPS;
         }
         // maxUserRewardBps is the multiplier (e.g., 20000 = 2x fees paid)
         return (feesPaid * params.maxUserRewardBps) / BPS;
