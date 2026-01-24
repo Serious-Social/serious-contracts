@@ -63,6 +63,9 @@ interface IBeliefMarket {
     /// @notice Thrown when reward duration minimum not met
     error MinRewardDurationNotMet();
 
+    /// @notice Thrown when stake amount is outside allowed range
+    error StakeOutOfRange();
+
     /*//////////////////////////////////////////////////////////////
                             WRITE FUNCTIONS
     //////////////////////////////////////////////////////////////*/

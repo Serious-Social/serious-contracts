@@ -56,6 +56,10 @@ struct MarketParams {
     /// @notice Whether to deposit principal into Aave for yield-bearing escrow
     /// @dev When enabled, yield is skimmed to fund the SRP. Disabled by default.
     bool yieldBearingEscrow;
+    /// @notice Minimum stake amount (in token units, e.g., 5e6 for $5 USDC)
+    uint64 minStake;
+    /// @notice Maximum stake amount (in token units, e.g., 100e6 for $100 USDC)
+    uint64 maxStake;
 }
 
 /// @notice State snapshot for view functions

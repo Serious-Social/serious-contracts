@@ -41,6 +41,8 @@ contract BeliefFactoryTest is Test {
     uint16 constant LATE_ENTRY_FEE_MAX_BPS = 500;
     uint64 constant LATE_ENTRY_FEE_SCALE = 1000e6;
     uint16 constant AUTHOR_PREMIUM_BPS = 200;
+    uint64 constant MIN_STAKE = 5e6;
+    uint64 constant MAX_STAKE = 100_000e6;
 
     function setUp() public {
         usdc = new MockUSDC();
@@ -69,7 +71,9 @@ contract BeliefFactoryTest is Test {
             lateEntryFeeMaxBps: LATE_ENTRY_FEE_MAX_BPS,
             lateEntryFeeScale: LATE_ENTRY_FEE_SCALE,
             authorPremiumBps: AUTHOR_PREMIUM_BPS,
-            yieldBearingEscrow: false
+            yieldBearingEscrow: false,
+            minStake: MIN_STAKE,
+            maxStake: MAX_STAKE
         });
     }
 
@@ -185,7 +189,9 @@ contract BeliefFactoryTest is Test {
             lateEntryFeeMaxBps: 1000,
             lateEntryFeeScale: 500e6,
             authorPremiumBps: 300,
-            yieldBearingEscrow: false
+            yieldBearingEscrow: false,
+            minStake: MIN_STAKE,
+            maxStake: MAX_STAKE
         });
 
         vm.prank(alice);
@@ -230,7 +236,9 @@ contract BeliefFactoryTest is Test {
             lateEntryFeeMaxBps: 1000,
             lateEntryFeeScale: 500e6,
             authorPremiumBps: 300,
-            yieldBearingEscrow: false
+            yieldBearingEscrow: false,
+            minStake: MIN_STAKE,
+            maxStake: MAX_STAKE
         });
 
         vm.prank(owner);
@@ -312,7 +320,7 @@ contract BeliefFactoryTest is Test {
     //////////////////////////////////////////////////////////////*/
 
     function testFuzz_CreateMarketWithCommitment(uint256 commitment) public {
-        commitment = bound(commitment, 1e6, 10_000_000e6);
+        commitment = bound(commitment, MIN_STAKE, MAX_STAKE);
         usdc.mint(alice, commitment);
 
         vm.startPrank(alice);

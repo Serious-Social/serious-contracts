@@ -274,7 +274,7 @@ contract BeliefMarket is IBeliefMarket {
 
     /// @notice Internal commit logic for both sides
     function _commit(Side side, uint256 amount) internal returns (uint256 positionId) {
-        if (amount == 0) revert ZeroAmount();
+        if (amount < params.minStake || amount > params.maxStake) revert StakeOutOfRange();
 
         // Transfer USDC from sender
         usdc.safeTransferFrom(msg.sender, address(this), amount);
@@ -320,6 +320,7 @@ contract BeliefMarket is IBeliefMarket {
     /// @notice Handle author's initial commitment (no late entry fee)
     /// @dev USDC is already transferred to this contract by the factory
     function _commitAsAuthor(address author, uint256 amount) internal {
+        if (amount < params.minStake || amount > params.maxStake) revert StakeOutOfRange();
         // Note: USDC already transferred by factory before initialize() is called
 
         // Author pays premium to SRP
