@@ -18,11 +18,7 @@ interface IBeliefMarket {
     /// @param amount Principal amount staked
     /// @param unlockTimestamp When the position becomes withdrawable
     event Committed(
-        uint256 indexed positionId,
-        address indexed user,
-        Side side,
-        uint256 amount,
-        uint48 unlockTimestamp
+        uint256 indexed positionId, address indexed user, Side side, uint256 amount, uint48 unlockTimestamp
     );
 
     /// @notice Emitted when a user withdraws their principal
