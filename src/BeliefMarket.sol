@@ -4,7 +4,7 @@ pragma solidity ^0.8.20;
 import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import {SafeERC20} from "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
 import {IBeliefMarket} from "./interfaces/IBeliefMarket.sol";
-import {Side, Pool, Position, MarketParams, MarketState, RewardCheckpoint} from "./types/BeliefTypes.sol";
+import {Side, Pool, Position, MarketParams, MarketState} from "./types/BeliefTypes.sol";
 
 /// @title BeliefMarket
 /// @notice A market where users stake USDC to signal belief (support or oppose) on claims
@@ -22,6 +22,9 @@ contract BeliefMarket is IBeliefMarket {
 
     /// @notice Precision for belief calculation (1e18 = 100%)
     uint256 private constant PRECISION = 1e18;
+
+    /// @notice High precision for reward accumulators (1e27)
+    uint256 private constant RAY = 1e27;
 
     /*//////////////////////////////////////////////////////////////
                                 STORAGE
@@ -63,14 +66,26 @@ contract BeliefMarket is IBeliefMarket {
     /// @notice User's position IDs
     mapping(address => uint256[]) private _userPositions;
 
-    /// @notice Reward checkpoints for discrete distribution
-    RewardCheckpoint[] public rewardCheckpoints;
-
-    /// @notice Last claimed checkpoint index per position
-    mapping(uint256 => uint256) public positionLastClaimedCheckpoint;
-
     /// @notice Fees paid by each position (for max reward cap calculation)
     mapping(uint256 => uint256) private _positionFeesPaid;
+
+    /*//////////////////////////////////////////////////////////////
+                        REWARD ACCUMULATORS (O(1))
+    //////////////////////////////////////////////////////////////*/
+
+    /// @notice Global accumulator: Σ (reward × timestamp / totalWeight)
+    /// @dev Used with rewardPerPrincipalPerTime for O(1) reward calculation
+    uint256 public rewardPerPrincipalTime;
+
+    /// @notice Global accumulator: Σ (reward / totalWeight)
+    /// @dev Combined with depositTimestamp to calculate time-weighted rewards
+    uint256 public rewardPerPrincipalPerTime;
+
+    /// @notice Per-position snapshot of rewardPerPrincipalTime at deposit/claim
+    mapping(uint256 => uint256) public positionRewardPerPrincipalTimePaid;
+
+    /// @notice Per-position snapshot of rewardPerPrincipalPerTime at deposit/claim
+    mapping(uint256 => uint256) public positionRewardPerPrincipalPerTimePaid;
 
     /*//////////////////////////////////////////////////////////////
                               INITIALIZATION
@@ -163,8 +178,9 @@ contract BeliefMarket is IBeliefMarket {
 
         if (claimable == 0) revert NoRewardsToClaim();
 
-        // Update state
-        positionLastClaimedCheckpoint[positionId] = rewardCheckpoints.length;
+        // Update state - snapshot current accumulators
+        positionRewardPerPrincipalTimePaid[positionId] = rewardPerPrincipalTime;
+        positionRewardPerPrincipalPerTimePaid[positionId] = rewardPerPrincipalPerTime;
         pos.claimedRewards += claimable;
         srpBalance -= claimable;
 
@@ -253,11 +269,6 @@ contract BeliefMarket is IBeliefMarket {
         return _userPositions[user];
     }
 
-    /// @notice Get checkpoint count for iteration
-    function getCheckpointCount() external view returns (uint256) {
-        return rewardCheckpoints.length;
-    }
-
     /// @notice Get the current late entry fee in basis points
     /// @return feeBps The current fee (scales with total principal staked)
     function getCurrentEntryFeeBps() external view returns (uint256 feeBps) {
@@ -314,6 +325,10 @@ contract BeliefMarket is IBeliefMarket {
         _userPositions[msg.sender].push(positionId);
         _positionFeesPaid[positionId] = fee;
 
+        // Snapshot reward accumulators for O(1) reward calculation
+        positionRewardPerPrincipalTimePaid[positionId] = rewardPerPrincipalTime;
+        positionRewardPerPrincipalPerTimePaid[positionId] = rewardPerPrincipalPerTime;
+
         emit Committed(positionId, msg.sender, side, netAmount, unlockTime);
     }
 
@@ -350,18 +365,25 @@ contract BeliefMarket is IBeliefMarket {
         _userPositions[author].push(positionId);
         _positionFeesPaid[positionId] = premium;
 
+        // Snapshot reward accumulators for O(1) reward calculation
+        positionRewardPerPrincipalTimePaid[positionId] = rewardPerPrincipalTime;
+        positionRewardPerPrincipalPerTimePaid[positionId] = rewardPerPrincipalPerTime;
+
         emit Committed(positionId, author, Side.Support, netAmount, unlockTime);
     }
 
-    /// @notice Add funds to SRP and create checkpoint
+    /// @notice Add funds to SRP and update reward accumulators
+    /// @dev Uses Synthetix-style O(1) accumulator pattern adapted for time-weighted stakes
     function _addToSrp(uint256 amount, string memory source) internal {
         srpBalance += amount;
 
         uint256 totalWeight = _getTotalWeight();
         if (totalWeight > 0) {
-            rewardCheckpoints.push(
-                RewardCheckpoint({amount: amount, timestamp: uint48(block.timestamp), totalWeight: totalWeight})
-            );
+            // Update accumulators for O(1) reward calculation
+            // rewardPerPrincipalTime += (amount × timestamp × RAY) / totalWeight
+            // rewardPerPrincipalPerTime += (amount × RAY) / totalWeight
+            rewardPerPrincipalTime += (amount * block.timestamp * RAY) / totalWeight;
+            rewardPerPrincipalPerTime += (amount * RAY) / totalWeight;
         }
         // If no weight yet, funds stay in SRP for future distribution
 
@@ -388,27 +410,27 @@ contract BeliefMarket is IBeliefMarket {
         return _getWeight(Side.Support) + _getWeight(Side.Oppose);
     }
 
-    /// @notice Calculate pending rewards for a position
-    function _calculatePendingRewards(uint256 positionId) internal view returns (uint256 pending) {
+    /// @notice Calculate pending rewards for a position in O(1)
+    /// @dev Uses dual accumulator pattern: pending = amount × (ΔA - depositTime × ΔB)
+    /// where A = Σ(reward × time / weight) and B = Σ(reward / weight)
+    function _calculatePendingRewards(uint256 positionId) internal view returns (uint256) {
         Position memory pos = _positions[positionId];
-        uint256 startIdx = positionLastClaimedCheckpoint[positionId];
 
-        for (uint256 i = startIdx; i < rewardCheckpoints.length; i++) {
-            RewardCheckpoint memory cp = rewardCheckpoints[i];
+        // Withdrawn positions forfeit unclaimed rewards
+        if (pos.withdrawn) return 0;
 
-            // Skip if position didn't exist at checkpoint
-            if (pos.depositTimestamp >= cp.timestamp) continue;
+        // Calculate deltas since position was created/last claimed
+        uint256 deltaA = rewardPerPrincipalTime - positionRewardPerPrincipalTimePaid[positionId];
+        uint256 deltaB = rewardPerPrincipalPerTime - positionRewardPerPrincipalPerTimePaid[positionId];
 
-            // Skip if position was withdrawn before checkpoint
-            if (pos.withdrawn) continue;
+        // No rewards accumulated
+        if (deltaA == 0 && deltaB == 0) return 0;
 
-            // Calculate position's weight at checkpoint time
-            // Weight = amount * (checkpoint_time - deposit_time)
-            uint256 posWeight = pos.amount * (cp.timestamp - pos.depositTimestamp);
+        // pending = amount × (deltaA - depositTime × deltaB) / RAY
+        // This equals: amount × Σ[reward × (checkpointTime - depositTime) / totalWeight]
+        uint256 timeWeightedDelta = deltaA - (uint256(pos.depositTimestamp) * deltaB);
 
-            // Position's share of this checkpoint's rewards
-            pending += (cp.amount * posWeight) / cp.totalWeight;
-        }
+        return (pos.amount * timeWeightedDelta) / RAY;
     }
 
     /// @notice Calculate max reward for a position based on fees paid

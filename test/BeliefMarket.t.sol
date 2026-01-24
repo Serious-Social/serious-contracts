@@ -621,23 +621,36 @@ contract BeliefMarketTest is Test {
         assertEq(weightAfter, 0);
     }
 
-    function test_MultipleCheckpoints() public {
+    function test_RewardAccumulators_UpdateOnDeposit() public {
         _initializeMarket();
 
-        // First staker
+        // First staker - no fees, accumulators should stay at 0
         vm.prank(alice);
         market.commitSupport(10_000e6);
 
-        // Multiple late entries create multiple checkpoints
+        assertEq(market.rewardPerPrincipalTime(), 0);
+        assertEq(market.rewardPerPrincipalPerTime(), 0);
+
+        // Wait so weight builds up
         vm.warp(block.timestamp + 1 days);
+
+        // Second staker pays late entry fee, accumulators should update
         vm.prank(bob);
         market.commitSupport(5_000e6);
 
+        assertGt(market.rewardPerPrincipalTime(), 0);
+        assertGt(market.rewardPerPrincipalPerTime(), 0);
+
+        uint256 accumA = market.rewardPerPrincipalTime();
+        uint256 accumB = market.rewardPerPrincipalPerTime();
+
+        // Third staker pays fee, accumulators should increase further
         vm.warp(block.timestamp + 1 days);
         vm.prank(charlie);
         market.commitOppose(5_000e6);
 
-        assertEq(market.getCheckpointCount(), 2);
+        assertGt(market.rewardPerPrincipalTime(), accumA);
+        assertGt(market.rewardPerPrincipalPerTime(), accumB);
     }
 
     /*//////////////////////////////////////////////////////////////

@@ -77,14 +77,3 @@ struct MarketState {
     /// @notice Current balance in Signal Reward Pool
     uint256 srpBalance;
 }
-
-/// @notice Checkpoint for discrete reward distribution
-/// @dev Created when SRP receives funds; positions claim proportional share based on weight
-struct RewardCheckpoint {
-    /// @notice Reward amount added at this checkpoint
-    uint256 amount;
-    /// @notice Timestamp when checkpoint was created
-    uint48 timestamp;
-    /// @notice Total weight across all active positions at checkpoint time
-    uint256 totalWeight;
-}
