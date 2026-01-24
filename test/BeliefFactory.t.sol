@@ -141,18 +141,12 @@ contract BeliefFactoryTest is Test {
     }
 
     function test_CreateMarket_EmitsEvent() public {
-        vm.prank(alice);
-        vm.expectEmit(true, true, true, true);
-        // We don't know the market address yet, so we compute it
-        address expectedMarket = factory.createMarket(POST_ID_1, 0);
-
-        // Reset and do it again to test the event
-        factory = new BeliefFactory(address(usdc), _defaultParams());
-        vm.prank(alice);
-        usdc.approve(address(factory), type(uint256).max);
+        // We check indexed params (postId, author) but not the market address
+        vm.expectEmit(true, false, true, false);
+        emit IBeliefFactory.MarketCreated(POST_ID_1, address(0), alice);
 
         vm.prank(alice);
-        emit IBeliefFactory.MarketCreated(POST_ID_1, expectedMarket, alice);
+        factory.createMarket(POST_ID_1, 0);
     }
 
     function test_CreateMarket_RevertIfAlreadyExists() public {
