@@ -144,6 +144,9 @@ contract BeliefMarket is IBeliefMarket {
         if (pos.withdrawn) revert AlreadyWithdrawn();
         if (block.timestamp < pos.unlockTimestamp) revert PositionLocked();
 
+        // Auto-claim any pending rewards before withdrawal to prevent trapped funds
+        uint256 rewardsClaimed = _claimRewardsInternal(positionId, pos);
+
         pos.withdrawn = true;
 
         // Update pool state
@@ -155,6 +158,9 @@ contract BeliefMarket is IBeliefMarket {
         usdc.safeTransfer(msg.sender, pos.amount);
 
         emit Withdrawn(positionId, msg.sender, pos.amount);
+        if (rewardsClaimed > 0) {
+            emit RewardsClaimed(positionId, msg.sender, rewardsClaimed);
+        }
     }
 
     /// @inheritdoc IBeliefMarket
@@ -164,28 +170,13 @@ contract BeliefMarket is IBeliefMarket {
 
         Position storage pos = _positions[positionId];
 
-        // Check minRewardDuration
+        // Check minRewardDuration (external claims enforce this; internal claims from withdraw skip it)
         if (block.timestamp < pos.depositTimestamp + params.minRewardDuration) {
             revert MinRewardDurationNotMet();
         }
 
-        uint256 pending = _calculatePendingRewards(positionId);
-        if (pending == 0) revert NoRewardsToClaim();
-
-        // Apply max user reward cap
-        uint256 maxReward = _calculateMaxUserReward(positionId);
-        uint256 claimable = _min(pending, maxReward - pos.claimedRewards);
-
+        uint256 claimable = _claimRewardsInternal(positionId, pos);
         if (claimable == 0) revert NoRewardsToClaim();
-
-        // Update state - snapshot current accumulators
-        positionRewardPerPrincipalTimePaid[positionId] = rewardPerPrincipalTime;
-        positionRewardPerPrincipalPerTimePaid[positionId] = rewardPerPrincipalPerTime;
-        pos.claimedRewards += claimable;
-        srpBalance -= claimable;
-
-        // Transfer rewards
-        usdc.safeTransfer(msg.sender, claimable);
 
         emit RewardsClaimed(positionId, msg.sender, claimable);
         return claimable;
@@ -373,6 +364,38 @@ contract BeliefMarket is IBeliefMarket {
         positionRewardPerPrincipalPerTimePaid[positionId] = rewardPerPrincipalPerTime;
 
         emit Committed(positionId, author, Side.Support, netAmount, unlockTime);
+    }
+
+    /// @notice Internal claim logic used by both claimRewards() and withdraw()
+    /// @dev Does not check minRewardDuration - caller must handle that if needed
+    /// @param positionId The position to claim rewards for
+    /// @param pos Storage pointer to the position
+    /// @return claimable Amount of rewards claimed (0 if none)
+    function _claimRewardsInternal(uint256 positionId, Position storage pos) internal returns (uint256 claimable) {
+        // Skip if minRewardDuration not met (rewards are 0 anyway per pendingRewards logic)
+        if (block.timestamp < pos.depositTimestamp + params.minRewardDuration) {
+            return 0;
+        }
+
+        uint256 pending = _calculatePendingRewards(positionId);
+        if (pending == 0) return 0;
+
+        // Apply max user reward cap
+        uint256 maxReward = _calculateMaxUserReward(positionId);
+        claimable = _min(pending, maxReward - pos.claimedRewards);
+
+        if (claimable == 0) return 0;
+
+        // Update state - snapshot current accumulators
+        positionRewardPerPrincipalTimePaid[positionId] = rewardPerPrincipalTime;
+        positionRewardPerPrincipalPerTimePaid[positionId] = rewardPerPrincipalPerTime;
+        pos.claimedRewards += claimable;
+        srpBalance -= claimable;
+
+        // Transfer rewards
+        usdc.safeTransfer(msg.sender, claimable);
+
+        return claimable;
     }
 
     /// @notice Add funds to SRP and update reward accumulators
