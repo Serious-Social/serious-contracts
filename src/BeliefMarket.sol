@@ -142,24 +142,47 @@ contract BeliefMarket is IBeliefMarket {
 
         Position storage pos = _positions[positionId];
         if (pos.withdrawn) revert AlreadyWithdrawn();
-        if (block.timestamp < pos.unlockTimestamp) revert PositionLocked();
 
-        // Auto-claim any pending rewards before withdrawal to prevent trapped funds
-        uint256 rewardsClaimed = _claimRewardsInternal(positionId, pos);
+        if (block.timestamp >= pos.unlockTimestamp) {
+            // NORMAL WITHDRAWAL: lock period has expired
+            // Auto-claim any pending rewards before withdrawal to prevent trapped funds
+            uint256 rewardsClaimed = _claimRewardsInternal(positionId, pos);
 
-        pos.withdrawn = true;
+            pos.withdrawn = true;
 
-        // Update pool state
-        Pool storage pool = pos.side == Side.Support ? supportPool : opposePool;
-        pool.principal -= pos.amount;
-        pool.weightedTimestampSum -= pos.amount * pos.depositTimestamp;
+            // Update pool state
+            Pool storage pool = pos.side == Side.Support ? supportPool : opposePool;
+            pool.principal -= pos.amount;
+            pool.weightedTimestampSum -= pos.amount * pos.depositTimestamp;
 
-        // Transfer principal back to user
-        usdc.safeTransfer(msg.sender, pos.amount);
+            // Transfer principal back to user
+            usdc.safeTransfer(msg.sender, pos.amount);
 
-        emit Withdrawn(positionId, msg.sender, pos.amount);
-        if (rewardsClaimed > 0) {
-            emit RewardsClaimed(positionId, msg.sender, rewardsClaimed);
+            emit Withdrawn(positionId, msg.sender, pos.amount);
+            if (rewardsClaimed > 0) {
+                emit RewardsClaimed(positionId, msg.sender, rewardsClaimed);
+            }
+        } else {
+            // EARLY WITHDRAWAL: lock period has NOT expired
+            if (params.earlyWithdrawPenaltyBps == 0) revert EarlyWithdrawDisabled();
+
+            // Mark withdrawn (forfeits pending rewards — _calculatePendingRewards returns 0)
+            pos.withdrawn = true;
+
+            // Update pool state (before _addToSrp so withdrawer is excluded from reward distribution)
+            Pool storage pool = pos.side == Side.Support ? supportPool : opposePool;
+            pool.principal -= pos.amount;
+            pool.weightedTimestampSum -= pos.amount * pos.depositTimestamp;
+
+            // Calculate penalty and feed to SRP
+            uint256 penalty = (pos.amount * params.earlyWithdrawPenaltyBps) / BPS;
+            _addToSrp(penalty, "early_withdraw");
+
+            // Transfer remaining principal to user
+            uint256 returnAmount = pos.amount - penalty;
+            usdc.safeTransfer(msg.sender, returnAmount);
+
+            emit EarlyWithdrawn(positionId, msg.sender, returnAmount, penalty);
         }
     }
 
@@ -289,10 +312,8 @@ contract BeliefMarket is IBeliefMarket {
         if (totalPrincipal > 0) {
             uint256 feeBps = _calculateLateEntryFeeBps(totalPrincipal);
             fee = (amount * feeBps) / BPS;
-            // _addToSrp may cap the fee due to maxSrpBps; excess stays with user as principal
-            uint256 actualFee = _addToSrp(fee, "late_entry");
-            netAmount = amount - actualFee;
-            fee = actualFee; // Update fee to actual amount for _positionFeesPaid
+            _addToSrp(fee, "late_entry");
+            netAmount = amount - fee;
         }
 
         // Update pool state
@@ -333,9 +354,8 @@ contract BeliefMarket is IBeliefMarket {
 
         // Author pays premium to SRP
         uint256 premium = (amount * params.authorPremiumBps) / BPS;
-        // _addToSrp may cap the premium due to maxSrpBps; excess stays with author as principal
-        uint256 actualPremium = _addToSrp(premium, "author_premium");
-        uint256 netAmount = amount - actualPremium;
+        _addToSrp(premium, "author_premium");
+        uint256 netAmount = amount - premium;
 
         // Update support pool
         supportPool.principal += netAmount;
@@ -357,7 +377,7 @@ contract BeliefMarket is IBeliefMarket {
 
         _positionOwners[positionId] = author;
         _userPositions[author].push(positionId);
-        _positionFeesPaid[positionId] = actualPremium;
+        _positionFeesPaid[positionId] = premium;
 
         // Snapshot reward accumulators for O(1) reward calculation
         positionRewardPerPrincipalTimePaid[positionId] = rewardPerPrincipalTime;
@@ -400,48 +420,21 @@ contract BeliefMarket is IBeliefMarket {
 
     /// @notice Add funds to SRP and update reward accumulators
     /// @dev Uses Synthetix-style O(1) accumulator pattern adapted for time-weighted stakes
-    /// @dev Enforces maxSrpBps cap - returns actual amount added (may be less than requested)
     /// @param amount The amount to add to SRP
     /// @param source Description of the fee source (for events)
-    /// @return actualAmount The actual amount added (may be capped)
-    function _addToSrp(uint256 amount, string memory source) internal returns (uint256 actualAmount) {
-        // Enforce maxSrpBps cap: SRP cannot exceed maxSrpBps of total principal
-        uint256 totalPrincipal = supportPool.principal + opposePool.principal;
+    function _addToSrp(uint256 amount, string memory source) internal {
+        if (amount == 0) return;
 
-        // If no principal yet (first deposit), allow the fee without cap
-        // The cap is meaningless when there's nothing to cap against
-        if (totalPrincipal == 0) {
-            actualAmount = amount;
-        } else {
-            uint256 maxSrp = (totalPrincipal * params.maxSrpBps) / BPS;
+        srpBalance += amount;
 
-            // Cap amount to not exceed maxSrp
-            if (srpBalance >= maxSrp) {
-                actualAmount = 0;
-            } else if (srpBalance + amount > maxSrp) {
-                actualAmount = maxSrp - srpBalance;
-            } else {
-                actualAmount = amount;
-            }
+        uint256 totalWeight = _getTotalWeight();
+        if (totalWeight > 0) {
+            rewardPerPrincipalTime += (amount * block.timestamp * RAY) / totalWeight;
+            rewardPerPrincipalPerTime += (amount * RAY) / totalWeight;
         }
+        // If no weight yet, funds stay in SRP for future distribution
 
-        if (actualAmount > 0) {
-            srpBalance += actualAmount;
-
-            uint256 totalWeight = _getTotalWeight();
-            if (totalWeight > 0) {
-                // Update accumulators for O(1) reward calculation
-                // rewardPerPrincipalTime += (amount × timestamp × RAY) / totalWeight
-                // rewardPerPrincipalPerTime += (amount × RAY) / totalWeight
-                rewardPerPrincipalTime += (actualAmount * block.timestamp * RAY) / totalWeight;
-                rewardPerPrincipalPerTime += (actualAmount * RAY) / totalWeight;
-            }
-            // If no weight yet, funds stay in SRP for future distribution
-
-            emit SrpFunded(actualAmount, source);
-        }
-
-        return actualAmount;
+        emit SrpFunded(amount, source);
     }
 
     /// @notice Calculate time-weighted signal for a side

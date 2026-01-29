@@ -21,12 +21,12 @@ contract BeliefMarketTest is Test {
     // Default market params
     uint32 constant LOCK_PERIOD = 30 days;
     uint32 constant MIN_REWARD_DURATION = 7 days;
-    uint16 constant MAX_SRP_BPS = 1000; // 10%
     uint16 constant MAX_USER_REWARD_BPS = 20000; // 2x fees paid
     uint16 constant LATE_ENTRY_FEE_BASE_BPS = 50; // 0.5%
     uint16 constant LATE_ENTRY_FEE_MAX_BPS = 500; // 5%
     uint64 constant LATE_ENTRY_FEE_SCALE = 1000e6; // +1 bps per $1000
     uint16 constant AUTHOR_PREMIUM_BPS = 200; // 2%
+    uint16 constant EARLY_WITHDRAW_PENALTY_BPS = 500; // 5%
     uint64 constant MIN_STAKE = 5e6; // $5 USDC
     uint64 constant MAX_STAKE = 100_000e6; // $100k USDC (wide for testing)
 
@@ -55,12 +55,12 @@ contract BeliefMarketTest is Test {
         return MarketParams({
             lockPeriod: LOCK_PERIOD,
             minRewardDuration: MIN_REWARD_DURATION,
-            maxSrpBps: MAX_SRP_BPS,
             maxUserRewardBps: MAX_USER_REWARD_BPS,
             lateEntryFeeBaseBps: LATE_ENTRY_FEE_BASE_BPS,
             lateEntryFeeMaxBps: LATE_ENTRY_FEE_MAX_BPS,
             lateEntryFeeScale: LATE_ENTRY_FEE_SCALE,
             authorPremiumBps: AUTHOR_PREMIUM_BPS,
+            earlyWithdrawPenaltyBps: EARLY_WITHDRAW_PENALTY_BPS,
             yieldBearingEscrow: false,
             minStake: MIN_STAKE,
             maxStake: MAX_STAKE
@@ -318,16 +318,22 @@ contract BeliefMarketTest is Test {
         assertEq(state.supportPrincipal, 0);
     }
 
-    function test_Withdraw_RevertBeforeLockPeriod() public {
+    function test_Withdraw_EarlyWithdrawIfBeforeLockPeriod() public {
         _initializeMarket();
 
         vm.prank(alice);
         uint256 positionId = market.commitSupport(1000e6);
 
-        // Try to withdraw before lock period
+        uint256 balanceBefore = usdc.balanceOf(alice);
+
+        // Withdraw before lock period — early withdrawal with penalty
         vm.prank(alice);
-        vm.expectRevert(IBeliefMarket.PositionLocked.selector);
         market.withdraw(positionId);
+
+        uint256 balanceAfter = usdc.balanceOf(alice);
+        uint256 expectedPenalty = (1000e6 * uint256(EARLY_WITHDRAW_PENALTY_BPS)) / 10000;
+        uint256 expectedReturn = 1000e6 - expectedPenalty;
+        assertEq(balanceAfter - balanceBefore, expectedReturn);
     }
 
     function test_Withdraw_RevertIfNotOwner() public {
@@ -906,122 +912,251 @@ contract BeliefMarketTest is Test {
     }
 
     /*//////////////////////////////////////////////////////////////
-                        SRP CAP TESTS
+                    EARLY WITHDRAWAL TESTS
     //////////////////////////////////////////////////////////////*/
 
-    function test_SrpCapped_AtMaxBps() public {
+    function test_EarlyWithdraw_Basic() public {
         _initializeMarket();
 
-        // First staker
+        uint256 amount = 100e6;
         vm.prank(alice);
-        market.commitSupport(10_000e6);
+        uint256 positionId = market.commitSupport(amount);
 
-        // Many subsequent stakers to try to accumulate fees
-        // maxSrpBps = 1000 (10%), so max SRP should be 10% of total principal
-        for (uint256 i = 0; i < 10; i++) {
-            address staker = address(uint160(100 + i));
-            usdc.mint(staker, 10_000e6);
-            vm.prank(staker);
-            usdc.approve(address(market), 10_000e6);
-            vm.prank(staker);
-            market.commitSupport(10_000e6);
-        }
+        uint256 balanceBefore = usdc.balanceOf(alice);
 
-        // Get market state
+        // Withdraw before lock period
+        vm.prank(alice);
+        market.withdraw(positionId);
+
+        uint256 balanceAfter = usdc.balanceOf(alice);
+        uint256 expectedPenalty = (amount * EARLY_WITHDRAW_PENALTY_BPS) / 10000;
+        uint256 expectedReturn = amount - expectedPenalty;
+
+        assertEq(balanceAfter - balanceBefore, expectedReturn, "Should receive principal minus penalty");
+
+        // Pool should be updated
         MarketState memory state = market.getMarketState();
-        uint256 totalPrincipal = state.supportPrincipal + state.opposePrincipal;
-        uint256 maxSrp = (totalPrincipal * MAX_SRP_BPS) / 10000;
+        assertEq(state.supportPrincipal, 0, "Pool principal should be zero");
+        assertEq(state.srpBalance, expectedPenalty, "SRP should receive penalty");
 
-        // SRP should not exceed maxSrpBps of total principal
-        assertLe(state.srpBalance, maxSrp, "SRP should not exceed maxSrpBps of total principal");
+        // Position should be marked withdrawn
+        Position memory pos = market.getPosition(positionId);
+        assertTrue(pos.withdrawn);
     }
 
-    function test_SrpCapped_ExcessFeeRefunded() public {
-        // Use params with very low maxSrpBps to make capping easier to trigger
-        MarketParams memory customParams = MarketParams({
-            lockPeriod: LOCK_PERIOD,
-            minRewardDuration: MIN_REWARD_DURATION,
-            maxSrpBps: 100, // Only 1% max SRP
-            maxUserRewardBps: MAX_USER_REWARD_BPS,
-            lateEntryFeeBaseBps: 500, // High 5% base fee
-            lateEntryFeeMaxBps: 500,
-            lateEntryFeeScale: 1000e6,
-            authorPremiumBps: AUTHOR_PREMIUM_BPS,
-            yieldBearingEscrow: false,
-            minStake: MIN_STAKE,
-            maxStake: MAX_STAKE
-        });
+    function test_EarlyWithdraw_RewardsForfeited() public {
+        _initializeMarket();
 
-        market.initialize(POST_ID, address(usdc), customParams, address(0), 0);
-
-        // First staker - no fee
+        // Alice stakes first
         vm.prank(alice);
         uint256 alicePos = market.commitSupport(10_000e6);
 
-        Position memory alicePosition = market.getPosition(alicePos);
-        assertEq(alicePosition.amount, 10_000e6, "First staker should have full amount");
+        // Wait for weight to build
+        vm.warp(block.timestamp + 1 days);
 
-        // Second staker - would pay 5% = $500 fee
-        // But max SRP is 1% of ~$10k = $100
-        // So only $100 should go to SRP, $400 stays as principal
+        // Bob stakes and pays late entry fee, creating rewards
         vm.prank(bob);
         uint256 bobPos = market.commitSupport(10_000e6);
 
-        Position memory bobPosition = market.getPosition(bobPos);
+        // Alice early-withdraws — forfeits pending rewards
+        vm.prank(alice);
+        market.withdraw(alicePos);
 
-        // Bob would have paid $500 fee (5% of $10k)
-        // But SRP can only hold $100 (1% of $10k principal before Bob)
-        // So Bob's net should be $10k - $100 = $9,900
-        assertGt(bobPosition.amount, 10_000e6 - 500e6, "Bob should get excess fee back as principal");
-        assertEq(bobPosition.amount, 10_000e6 - 100e6, "Bob's net should be amount minus capped fee");
+        // Alice's pending rewards should now be 0 (withdrawn = true)
+        uint256 alicePending = market.pendingRewards(alicePos);
+        assertEq(alicePending, 0, "Early withdrawer should have 0 pending rewards");
 
-        // Verify SRP is at its cap
-        MarketState memory state = market.getMarketState();
-        assertEq(state.srpBalance, 100e6, "SRP should be at its cap");
+        // Wait past min reward duration for Bob
+        vm.warp(block.timestamp + MIN_REWARD_DURATION + 1);
+
+        // Bob should still be able to claim rewards
+        uint256 bobPending = market.pendingRewards(bobPos);
+        // Bob's rewards may be 0 or very small since most SRP was funded when Alice was still in
+        // But the penalty from Alice's early withdraw should generate new rewards for Bob
+        // Let's just verify Bob can claim without reverting if he has rewards
+        if (bobPending > 0) {
+            vm.prank(bob);
+            uint256 claimed = market.claimRewards(bobPos);
+            assertGt(claimed, 0);
+        }
     }
 
-    function test_SrpCap_MultipleDeposits() public {
-        // Use params with low maxSrpBps
-        MarketParams memory customParams = MarketParams({
-            lockPeriod: LOCK_PERIOD,
-            minRewardDuration: MIN_REWARD_DURATION,
-            maxSrpBps: 200, // 2% max SRP
-            maxUserRewardBps: MAX_USER_REWARD_BPS,
-            lateEntryFeeBaseBps: 300, // 3% base fee
-            lateEntryFeeMaxBps: 500,
-            lateEntryFeeScale: 1000e6,
-            authorPremiumBps: AUTHOR_PREMIUM_BPS,
-            yieldBearingEscrow: false,
-            minStake: MIN_STAKE,
-            maxStake: MAX_STAKE
-        });
+    function test_EarlyWithdraw_NormalWithdrawUnchanged() public {
+        _initializeMarket();
+
+        uint256 amount = 1000e6;
+        vm.prank(alice);
+        uint256 positionId = market.commitSupport(amount);
+
+        uint256 balanceBefore = usdc.balanceOf(alice);
+
+        // Warp past lock period — normal withdrawal
+        vm.warp(block.timestamp + LOCK_PERIOD + 1);
+
+        vm.prank(alice);
+        market.withdraw(positionId);
+
+        uint256 balanceAfter = usdc.balanceOf(alice);
+        assertEq(balanceAfter - balanceBefore, amount, "Normal withdraw should return full principal");
+    }
+
+    function test_EarlyWithdraw_RevertsIfDisabled() public {
+        // Use params with earlyWithdrawPenaltyBps = 0
+        MarketParams memory customParams = _defaultParams();
+        customParams.earlyWithdrawPenaltyBps = 0;
 
         market.initialize(POST_ID, address(usdc), customParams, address(0), 0);
 
-        // First staker
         vm.prank(alice);
-        market.commitSupport(10_000e6);
+        uint256 positionId = market.commitSupport(1000e6);
 
-        // Second staker - should pay some fee
+        vm.prank(alice);
+        vm.expectRevert(IBeliefMarket.EarlyWithdrawDisabled.selector);
+        market.withdraw(positionId);
+    }
+
+    function test_EarlyWithdraw_RevertsIfAlreadyWithdrawn() public {
+        _initializeMarket();
+
+        vm.prank(alice);
+        uint256 positionId = market.commitSupport(1000e6);
+
+        // Early withdraw
+        vm.prank(alice);
+        market.withdraw(positionId);
+
+        // Try again
+        vm.prank(alice);
+        vm.expectRevert(IBeliefMarket.AlreadyWithdrawn.selector);
+        market.withdraw(positionId);
+    }
+
+    function test_EarlyWithdraw_RevertsIfNotOwner() public {
+        _initializeMarket();
+
+        vm.prank(alice);
+        uint256 positionId = market.commitSupport(1000e6);
+
         vm.prank(bob);
-        market.commitSupport(10_000e6);
+        vm.expectRevert(IBeliefMarket.NotPositionOwner.selector);
+        market.withdraw(positionId);
+    }
 
-        MarketState memory state1 = market.getMarketState();
-        uint256 srp1 = state1.srpBalance;
+    function test_EarlyWithdraw_SignalWeightDrops() public {
+        _initializeMarket();
 
-        // Third staker - should pay fee but may hit cap
-        vm.prank(charlie);
-        market.commitSupport(10_000e6);
+        // Both stake on support
+        vm.prank(alice);
+        uint256 alicePos = market.commitSupport(1000e6);
+        vm.prank(bob);
+        market.commitSupport(1000e6);
 
-        MarketState memory state2 = market.getMarketState();
-        uint256 srp2 = state2.srpBalance;
+        vm.warp(block.timestamp + 1 days);
 
-        // Verify SRP never exceeds cap after any deposit
-        uint256 maxSrp1 = (state1.supportPrincipal * 200) / 10000;
-        uint256 maxSrp2 = (state2.supportPrincipal * 200) / 10000;
+        uint256 weightBefore = market.getWeight(Side.Support);
+        assertGt(weightBefore, 0);
 
-        assertLe(srp1, maxSrp1, "SRP should respect cap after second deposit");
-        assertLe(srp2, maxSrp2, "SRP should respect cap after third deposit");
+        // Alice early-withdraws
+        vm.prank(alice);
+        market.withdraw(alicePos);
+
+        uint256 weightAfter = market.getWeight(Side.Support);
+        assertLt(weightAfter, weightBefore, "Weight should decrease after early withdrawal");
+        assertGt(weightAfter, 0, "Weight should not be zero (Bob still in)");
+    }
+
+    function test_EarlyWithdraw_BeliefCurveUpdates() public {
+        _initializeMarket();
+
+        // Alice supports, Bob opposes
+        vm.prank(alice);
+        uint256 alicePos = market.commitSupport(1000e6);
+        vm.prank(bob);
+        market.commitOppose(1000e6);
+
+        vm.warp(block.timestamp + 1 days);
+
+        uint256 beliefBefore = market.belief();
+        // Should be roughly 50%
+        assertApproxEqRel(beliefBefore, 0.5e18, 0.05e18);
+
+        // Alice (support side) early-withdraws
+        vm.prank(alice);
+        market.withdraw(alicePos);
+
+        uint256 beliefAfter = market.belief();
+        // Belief should shift toward oppose (0)
+        assertLt(beliefAfter, beliefBefore, "Belief should shift after support-side early withdrawal");
+    }
+
+    function test_EarlyWithdraw_RemainingStakersCanClaim() public {
+        _initializeMarket();
+
+        // Alice and Bob both stake
+        vm.prank(alice);
+        uint256 alicePos = market.commitSupport(10_000e6);
+
+        vm.warp(block.timestamp + 1 days);
+
+        vm.prank(bob);
+        uint256 bobPos = market.commitSupport(10_000e6);
+
+        // Wait so Bob builds some weight before Alice withdraws
+        vm.warp(block.timestamp + 1 days);
+
+        // Alice early-withdraws (penalty goes to SRP for remaining stakers)
+        vm.prank(alice);
+        market.withdraw(alicePos);
+
+        // Wait past min reward duration for Bob
+        vm.warp(block.timestamp + MIN_REWARD_DURATION + 1);
+
+        // Bob should be able to claim rewards from both the late entry fee and early withdrawal penalty
+        uint256 bobPending = market.pendingRewards(bobPos);
+        assertGt(bobPending, 0, "Bob should have pending rewards from penalty");
+
+        vm.prank(bob);
+        uint256 claimed = market.claimRewards(bobPos);
+        assertEq(claimed, bobPending);
+    }
+
+    function test_EarlyWithdraw_OnlyStaker() public {
+        _initializeMarket();
+
+        vm.prank(alice);
+        uint256 positionId = market.commitSupport(1000e6);
+
+        vm.warp(block.timestamp + 1 days);
+
+        // Only staker early-withdraws
+        vm.prank(alice);
+        market.withdraw(positionId);
+
+        // Pool should be zero
+        MarketState memory state = market.getMarketState();
+        assertEq(state.supportPrincipal, 0);
+        assertEq(state.supportWeight, 0);
+
+        // Market should accept new stakes
+        vm.prank(bob);
+        uint256 newPos = market.commitSupport(500e6);
+        assertGt(newPos, 0);
+    }
+
+    function test_EarlyWithdraw_EmitsEvent() public {
+        _initializeMarket();
+
+        uint256 amount = 1000e6;
+        vm.prank(alice);
+        uint256 positionId = market.commitSupport(amount);
+
+        uint256 expectedPenalty = (amount * EARLY_WITHDRAW_PENALTY_BPS) / 10000;
+        uint256 expectedReturn = amount - expectedPenalty;
+
+        vm.prank(alice);
+        vm.expectEmit(true, true, false, true);
+        emit IBeliefMarket.EarlyWithdrawn(positionId, alice, expectedReturn, expectedPenalty);
+        market.withdraw(positionId);
     }
 
     function test_FirstStaker_NoPrincipalBasedCapWhenFeesPaid() public {

@@ -33,6 +33,13 @@ interface IBeliefMarket {
     /// @param amount Reward amount claimed
     event RewardsClaimed(uint256 indexed positionId, address indexed user, uint256 amount);
 
+    /// @notice Emitted when a user early-withdraws with penalty
+    /// @param positionId The position being withdrawn
+    /// @param user Address of the withdrawer
+    /// @param amountReturned Principal minus penalty returned to user
+    /// @param penaltyFee Penalty amount sent to SRP
+    event EarlyWithdrawn(uint256 indexed positionId, address indexed user, uint256 amountReturned, uint256 penaltyFee);
+
     /// @notice Emitted when fees are added to the Signal Reward Pool
     /// @param amount Amount added to SRP
     /// @param source Description of fee source (e.g., "late_entry", "author_premium")
@@ -44,9 +51,6 @@ interface IBeliefMarket {
 
     /// @notice Thrown when stake amount is zero
     error ZeroAmount();
-
-    /// @notice Thrown when trying to withdraw before unlock time
-    error PositionLocked();
 
     /// @notice Thrown when position has already been withdrawn
     error AlreadyWithdrawn();
@@ -65,6 +69,9 @@ interface IBeliefMarket {
 
     /// @notice Thrown when stake amount is outside allowed range
     error StakeOutOfRange();
+
+    /// @notice Thrown when early withdrawal is disabled (earlyWithdrawPenaltyBps == 0)
+    error EarlyWithdrawDisabled();
 
     /*//////////////////////////////////////////////////////////////
                             WRITE FUNCTIONS

@@ -40,8 +40,6 @@ struct MarketParams {
     uint32 lockPeriod;
     /// @notice Minimum stake duration before rewards start accruing (seconds)
     uint32 minRewardDuration;
-    /// @notice Maximum SRP as percentage of total principal (basis points, e.g., 1000 = 10%)
-    uint16 maxSrpBps;
     /// @notice Maximum reward per user as multiplier of fees paid (basis points, e.g., 20000 = 2x)
     uint16 maxUserRewardBps;
     /// @notice Base late entry fee in basis points (e.g., 50 = 0.5%)
@@ -53,6 +51,8 @@ struct MarketParams {
     uint64 lateEntryFeeScale;
     /// @notice Author challenge premium in basis points (e.g., 200 = 2%)
     uint16 authorPremiumBps;
+    /// @notice Penalty in basis points for early withdrawal (e.g., 500 = 5%). Set to 0 to disable.
+    uint16 earlyWithdrawPenaltyBps;
     /// @notice Whether to deposit principal into Aave for yield-bearing escrow
     /// @dev When enabled, yield is skimmed to fund the SRP. Disabled by default.
     bool yieldBearingEscrow;
