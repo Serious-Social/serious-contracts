@@ -6,20 +6,7 @@ import {BeliefFactory} from "../src/BeliefFactory.sol";
 import {BeliefMarket} from "../src/BeliefMarket.sol";
 import {IBeliefFactory} from "../src/interfaces/IBeliefFactory.sol";
 import {Side, Position, MarketParams, MarketState} from "../src/types/BeliefTypes.sol";
-import {ERC20} from "@openzeppelin/contracts/token/ERC20/ERC20.sol";
-
-/// @notice Mock USDC with 6 decimals
-contract MockUSDC is ERC20 {
-    constructor() ERC20("USD Coin", "USDC") {}
-
-    function decimals() public pure override returns (uint8) {
-        return 6;
-    }
-
-    function mint(address to, uint256 amount) external {
-        _mint(to, amount);
-    }
-}
+import {MockUSDC} from "../src/mock/MockUSDC.sol";
 
 contract BeliefFactoryTest is Test {
     BeliefFactory public factory;
