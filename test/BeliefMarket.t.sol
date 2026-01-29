@@ -21,7 +21,6 @@ contract BeliefMarketTest is Test {
     // Default market params
     uint32 constant LOCK_PERIOD = 30 days;
     uint32 constant MIN_REWARD_DURATION = 7 days;
-    uint16 constant MAX_USER_REWARD_BPS = 20000; // 2x fees paid
     uint16 constant LATE_ENTRY_FEE_BASE_BPS = 50; // 0.5%
     uint16 constant LATE_ENTRY_FEE_MAX_BPS = 500; // 5%
     uint64 constant LATE_ENTRY_FEE_SCALE = 1000e6; // +1 bps per $1000
@@ -55,7 +54,6 @@ contract BeliefMarketTest is Test {
         return MarketParams({
             lockPeriod: LOCK_PERIOD,
             minRewardDuration: MIN_REWARD_DURATION,
-            maxUserRewardBps: MAX_USER_REWARD_BPS,
             lateEntryFeeBaseBps: LATE_ENTRY_FEE_BASE_BPS,
             lateEntryFeeMaxBps: LATE_ENTRY_FEE_MAX_BPS,
             lateEntryFeeScale: LATE_ENTRY_FEE_SCALE,
@@ -323,6 +321,13 @@ contract BeliefMarketTest is Test {
 
         vm.prank(alice);
         uint256 positionId = market.commitSupport(1000e6);
+
+        // Bob also stakes so penalty applies
+        vm.prank(bob);
+        market.commitSupport(1000e6);
+
+        // Warp so weight builds (W(t) > 0)
+        vm.warp(block.timestamp + 1 days);
 
         uint256 balanceBefore = usdc.balanceOf(alice);
 
@@ -832,86 +837,6 @@ contract BeliefMarketTest is Test {
     }
 
     /*//////////////////////////////////////////////////////////////
-                    FIRST STAKER REWARD CAP TESTS
-    //////////////////////////////////////////////////////////////*/
-
-    function test_FirstStaker_RewardCapped() public {
-        _initializeMarket();
-
-        // Alice is first staker (pays no late entry fee)
-        uint256 amount = 1000e6;
-        vm.prank(alice);
-        uint256 alicePos = market.commitSupport(amount);
-
-        // Wait for weight to build
-        vm.warp(block.timestamp + 1 days);
-
-        // Bob stakes and pays a large late entry fee to build up SRP
-        // This creates rewards that Alice could potentially claim
-        uint256 bobAmount = 50_000e6;
-        usdc.mint(bob, bobAmount);
-        vm.prank(bob);
-        usdc.approve(address(market), bobAmount);
-        vm.prank(bob);
-        market.commitSupport(bobAmount);
-
-        // Wait past min reward duration
-        vm.warp(block.timestamp + MIN_REWARD_DURATION + 1);
-
-        // Calculate Alice's max reward cap (maxUserRewardBps of principal)
-        // maxUserRewardBps = 20000 (200%), principal = 1000e6
-        uint256 maxReward = (amount * MAX_USER_REWARD_BPS) / 10000;
-
-        // Check pending rewards are capped
-        uint256 pending = market.pendingRewards(alicePos);
-        assertLe(pending, maxReward, "First staker rewards should be capped");
-
-        // Claim and verify cap is enforced
-        vm.prank(alice);
-        uint256 claimed = market.claimRewards(alicePos);
-        assertLe(claimed, maxReward, "Claimed rewards should be capped");
-    }
-
-    function test_Author_RewardCapped() public {
-        uint256 authorCommitment = 10_000e6;
-        _initializeMarketWithAuthor(authorCommitment);
-
-        // Author pays 2% premium = $200
-        uint256 premium = (authorCommitment * AUTHOR_PREMIUM_BPS) / 10000;
-
-        // Wait for author's weight to build
-        vm.warp(block.timestamp + 5 days);
-
-        // Multiple stakers pay late entry fees to build up SRP
-        uint256 stakingAmount = 50_000e6;
-        usdc.mint(alice, stakingAmount);
-        usdc.mint(bob, stakingAmount);
-
-        vm.prank(alice);
-        usdc.approve(address(market), stakingAmount);
-        vm.prank(alice);
-        market.commitSupport(stakingAmount);
-
-        vm.warp(block.timestamp + 1 days);
-
-        vm.prank(bob);
-        usdc.approve(address(market), stakingAmount);
-        vm.prank(bob);
-        market.commitSupport(stakingAmount);
-
-        // Wait past min reward duration
-        vm.warp(block.timestamp + MIN_REWARD_DURATION + 1);
-
-        // Author's cap is based on premium paid (not principal, since they paid premium)
-        // premium = $200, maxUserRewardBps = 20000 (200%), so max = $400
-        uint256 maxRewardFromPremium = (premium * MAX_USER_REWARD_BPS) / 10000;
-
-        // Check pending rewards
-        uint256 pending = market.pendingRewards(1);
-        assertLe(pending, maxRewardFromPremium, "Author rewards should be capped by premium paid");
-    }
-
-    /*//////////////////////////////////////////////////////////////
                     EARLY WITHDRAWAL TESTS
     //////////////////////////////////////////////////////////////*/
 
@@ -921,6 +846,13 @@ contract BeliefMarketTest is Test {
         uint256 amount = 100e6;
         vm.prank(alice);
         uint256 positionId = market.commitSupport(amount);
+
+        // Bob also stakes so the pool isn't empty when Alice withdraws
+        vm.prank(bob);
+        market.commitSupport(100e6);
+
+        // Warp so weight builds (W(t) > 0)
+        vm.warp(block.timestamp + 1 days);
 
         uint256 balanceBefore = usdc.balanceOf(alice);
 
@@ -934,10 +866,9 @@ contract BeliefMarketTest is Test {
 
         assertEq(balanceAfter - balanceBefore, expectedReturn, "Should receive principal minus penalty");
 
-        // Pool should be updated
+        // SRP should have received the penalty
         MarketState memory state = market.getMarketState();
-        assertEq(state.supportPrincipal, 0, "Pool principal should be zero");
-        assertEq(state.srpBalance, expectedPenalty, "SRP should receive penalty");
+        assertGt(state.srpBalance, 0, "SRP should receive penalty");
 
         // Position should be marked withdrawn
         Position memory pos = market.getPosition(positionId);
@@ -1128,14 +1059,20 @@ contract BeliefMarketTest is Test {
 
         vm.warp(block.timestamp + 1 days);
 
-        // Only staker early-withdraws
+        uint256 balanceBefore = usdc.balanceOf(alice);
+
+        // Only staker early-withdraws — no penalty since no one to receive it
         vm.prank(alice);
         market.withdraw(positionId);
 
-        // Pool should be zero
+        uint256 balanceAfter = usdc.balanceOf(alice);
+        assertEq(balanceAfter - balanceBefore, 1000e6, "Last staker should get full principal back");
+
+        // Pool and SRP should be zero
         MarketState memory state = market.getMarketState();
         assertEq(state.supportPrincipal, 0);
         assertEq(state.supportWeight, 0);
+        assertEq(state.srpBalance, 0, "No penalty should go to SRP when pool is empty");
 
         // Market should accept new stakes
         vm.prank(bob);
@@ -1150,6 +1087,13 @@ contract BeliefMarketTest is Test {
         vm.prank(alice);
         uint256 positionId = market.commitSupport(amount);
 
+        // Bob also stakes so penalty applies
+        vm.prank(bob);
+        market.commitSupport(1000e6);
+
+        // Warp so weight builds (W(t) > 0)
+        vm.warp(block.timestamp + 1 days);
+
         uint256 expectedPenalty = (amount * EARLY_WITHDRAW_PENALTY_BPS) / 10000;
         uint256 expectedReturn = amount - expectedPenalty;
 
@@ -1157,38 +1101,5 @@ contract BeliefMarketTest is Test {
         vm.expectEmit(true, true, false, true);
         emit IBeliefMarket.EarlyWithdrawn(positionId, alice, expectedReturn, expectedPenalty);
         market.withdraw(positionId);
-    }
-
-    function test_FirstStaker_NoPrincipalBasedCapWhenFeesPaid() public {
-        _initializeMarket();
-
-        // First staker (no fees)
-        vm.prank(alice);
-        market.commitSupport(1000e6);
-
-        vm.warp(block.timestamp + 1 days);
-
-        // Second staker pays fees
-        vm.prank(bob);
-        uint256 bobPos = market.commitSupport(5000e6);
-
-        // Get Bob's position and verify he paid fees
-        Position memory bobPosition = market.getPosition(bobPos);
-        uint256 expectedFee = 5000e6 - bobPosition.amount;
-        assertGt(expectedFee, 0, "Bob should have paid fees");
-
-        // Bob's cap should be based on fees paid (200% of fees), not principal
-        // For Bob: feesPaid > 0, so cap = feesPaid * maxUserRewardBps / BPS
-        uint256 maxRewardFromFees = (expectedFee * MAX_USER_REWARD_BPS) / 10000;
-
-        // Wait for more deposits to generate rewards
-        vm.warp(block.timestamp + 1 days);
-        vm.prank(charlie);
-        market.commitSupport(10_000e6);
-
-        vm.warp(block.timestamp + MIN_REWARD_DURATION + 1);
-
-        uint256 pending = market.pendingRewards(bobPos);
-        assertLe(pending, maxRewardFromFees, "Bob's rewards should be capped by fees paid");
     }
 }

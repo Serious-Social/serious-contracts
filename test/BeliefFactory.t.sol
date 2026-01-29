@@ -22,7 +22,6 @@ contract BeliefFactoryTest is Test {
     // Default market params
     uint32 constant LOCK_PERIOD = 30 days;
     uint32 constant MIN_REWARD_DURATION = 7 days;
-    uint16 constant MAX_USER_REWARD_BPS = 20000;
     uint16 constant LATE_ENTRY_FEE_BASE_BPS = 50;
     uint16 constant LATE_ENTRY_FEE_MAX_BPS = 500;
     uint64 constant LATE_ENTRY_FEE_SCALE = 1000e6;
@@ -52,7 +51,6 @@ contract BeliefFactoryTest is Test {
         return MarketParams({
             lockPeriod: LOCK_PERIOD,
             minRewardDuration: MIN_REWARD_DURATION,
-            maxUserRewardBps: MAX_USER_REWARD_BPS,
             lateEntryFeeBaseBps: LATE_ENTRY_FEE_BASE_BPS,
             lateEntryFeeMaxBps: LATE_ENTRY_FEE_MAX_BPS,
             lateEntryFeeScale: LATE_ENTRY_FEE_SCALE,
@@ -171,7 +169,6 @@ contract BeliefFactoryTest is Test {
             lockPeriod: 60 days,
             minRewardDuration: 14 days,
             earlyWithdrawPenaltyBps: EARLY_WITHDRAW_PENALTY_BPS,
-            maxUserRewardBps: 30000,
             lateEntryFeeBaseBps: 100,
             lateEntryFeeMaxBps: 1000,
             lateEntryFeeScale: 500e6,
@@ -218,7 +215,6 @@ contract BeliefFactoryTest is Test {
             lockPeriod: 60 days,
             minRewardDuration: 14 days,
             earlyWithdrawPenaltyBps: EARLY_WITHDRAW_PENALTY_BPS,
-            maxUserRewardBps: 30000,
             lateEntryFeeBaseBps: 100,
             lateEntryFeeMaxBps: 1000,
             lateEntryFeeScale: 500e6,

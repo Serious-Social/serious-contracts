@@ -28,7 +28,6 @@ contract DeployBaseSepolia is Script {
         MarketParams memory defaultParams = MarketParams({
             lockPeriod: 30 days,
             minRewardDuration: 7 days,
-            maxUserRewardBps: 20000, // 200% of fees
             lateEntryFeeBaseBps: 50, // 0.5%
             lateEntryFeeMaxBps: 500, // 5%
             lateEntryFeeScale: 1000e6, // +1 bps per $1000

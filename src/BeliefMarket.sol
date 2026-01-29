@@ -66,9 +66,6 @@ contract BeliefMarket is IBeliefMarket {
     /// @notice User's position IDs
     mapping(address => uint256[]) private _userPositions;
 
-    /// @notice Fees paid by each position (for max reward cap calculation)
-    mapping(uint256 => uint256) private _positionFeesPaid;
-
     /*//////////////////////////////////////////////////////////////
                         REWARD ACCUMULATORS (O(1))
     //////////////////////////////////////////////////////////////*/
@@ -174,9 +171,12 @@ contract BeliefMarket is IBeliefMarket {
             pool.principal -= pos.amount;
             pool.weightedTimestampSum -= pos.amount * pos.depositTimestamp;
 
-            // Calculate penalty and feed to SRP
-            uint256 penalty = (pos.amount * params.earlyWithdrawPenaltyBps) / BPS;
-            _addToSrp(penalty, "early_withdraw");
+            // Calculate penalty and feed to SRP (only if remaining stakers exist to receive it)
+            uint256 penalty = 0;
+            if (_getTotalWeight() > 0) {
+                penalty = (pos.amount * params.earlyWithdrawPenaltyBps) / BPS;
+                _addToSrp(penalty, "early_withdraw");
+            }
 
             // Transfer remaining principal to user
             uint256 returnAmount = pos.amount - penalty;
@@ -244,11 +244,7 @@ contract BeliefMarket is IBeliefMarket {
             return 0;
         }
 
-        uint256 pending = _calculatePendingRewards(positionId);
-
-        // Apply max user reward cap
-        uint256 maxReward = _calculateMaxUserReward(positionId);
-        return _min(pending, maxReward - pos.claimedRewards);
+        return _calculatePendingRewards(positionId);
     }
 
     /// @inheritdoc IBeliefMarket
@@ -337,7 +333,6 @@ contract BeliefMarket is IBeliefMarket {
 
         _positionOwners[positionId] = msg.sender;
         _userPositions[msg.sender].push(positionId);
-        _positionFeesPaid[positionId] = fee;
 
         // Snapshot reward accumulators for O(1) reward calculation
         positionRewardPerPrincipalTimePaid[positionId] = rewardPerPrincipalTime;
@@ -377,7 +372,6 @@ contract BeliefMarket is IBeliefMarket {
 
         _positionOwners[positionId] = author;
         _userPositions[author].push(positionId);
-        _positionFeesPaid[positionId] = premium;
 
         // Snapshot reward accumulators for O(1) reward calculation
         positionRewardPerPrincipalTimePaid[positionId] = rewardPerPrincipalTime;
@@ -397,13 +391,7 @@ contract BeliefMarket is IBeliefMarket {
             return 0;
         }
 
-        uint256 pending = _calculatePendingRewards(positionId);
-        if (pending == 0) return 0;
-
-        // Apply max user reward cap
-        uint256 maxReward = _calculateMaxUserReward(positionId);
-        claimable = _min(pending, maxReward - pos.claimedRewards);
-
+        claimable = _calculatePendingRewards(positionId);
         if (claimable == 0) return 0;
 
         // Update state - snapshot current accumulators
@@ -478,20 +466,6 @@ contract BeliefMarket is IBeliefMarket {
         uint256 timeWeightedDelta = deltaA - (uint256(pos.depositTimestamp) * deltaB);
 
         return (pos.amount * timeWeightedDelta) / RAY;
-    }
-
-    /// @notice Calculate max reward for a position based on fees paid
-    /// @dev If position paid no fees (first staker/author), cap at maxUserRewardBps of principal
-    function _calculateMaxUserReward(uint256 positionId) internal view returns (uint256) {
-        uint256 feesPaid = _positionFeesPaid[positionId];
-        if (feesPaid == 0) {
-            // No fees paid (first staker): cap at maxUserRewardBps of principal
-            // e.g., 20000 bps = 200% of principal, so $100 stake can earn up to $200 in rewards
-            Position memory pos = _positions[positionId];
-            return (pos.amount * params.maxUserRewardBps) / BPS;
-        }
-        // maxUserRewardBps is the multiplier (e.g., 20000 = 2x fees paid)
-        return (feesPaid * params.maxUserRewardBps) / BPS;
     }
 
     /// @notice Calculate late entry fee based on total principal staked

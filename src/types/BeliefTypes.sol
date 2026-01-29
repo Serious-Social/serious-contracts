@@ -40,8 +40,6 @@ struct MarketParams {
     uint32 lockPeriod;
     /// @notice Minimum stake duration before rewards start accruing (seconds)
     uint32 minRewardDuration;
-    /// @notice Maximum reward per user as multiplier of fees paid (basis points, e.g., 20000 = 2x)
-    uint16 maxUserRewardBps;
     /// @notice Base late entry fee in basis points (e.g., 50 = 0.5%)
     uint16 lateEntryFeeBaseBps;
     /// @notice Maximum late entry fee in basis points (e.g., 500 = 5%)
