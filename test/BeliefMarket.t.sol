@@ -3,12 +3,14 @@ pragma solidity ^0.8.20;
 
 import {Test, console} from "forge-std/Test.sol";
 import {BeliefMarket} from "../src/BeliefMarket.sol";
+import {BeliefVault} from "../src/BeliefVault.sol";
 import {IBeliefMarket} from "../src/interfaces/IBeliefMarket.sol";
 import {Side, Position, MarketParams, MarketState} from "../src/types/BeliefTypes.sol";
 import {MockUSDC} from "../src/mock/MockUSDC.sol";
 
 contract BeliefMarketTest is Test {
     BeliefMarket public market;
+    BeliefVault public vault;
     MockUSDC public usdc;
 
     address public alice = makeAddr("alice");
@@ -33,21 +35,27 @@ contract BeliefMarketTest is Test {
         usdc = new MockUSDC();
         market = new BeliefMarket();
 
+        // Deploy vault (this test contract acts as factory)
+        vault = new BeliefVault(address(this), address(usdc));
+
+        // Register market with vault
+        vault.registerMarket(address(market));
+
         // Mint USDC to test users
         usdc.mint(alice, 100_000e6);
         usdc.mint(bob, 100_000e6);
         usdc.mint(charlie, 100_000e6);
         usdc.mint(author, 100_000e6);
 
-        // Approve market for all users
+        // Approve vault (not market) for all users
         vm.prank(alice);
-        usdc.approve(address(market), type(uint256).max);
+        usdc.approve(address(vault), type(uint256).max);
         vm.prank(bob);
-        usdc.approve(address(market), type(uint256).max);
+        usdc.approve(address(vault), type(uint256).max);
         vm.prank(charlie);
-        usdc.approve(address(market), type(uint256).max);
+        usdc.approve(address(vault), type(uint256).max);
         vm.prank(author);
-        usdc.approve(address(market), type(uint256).max);
+        usdc.approve(address(vault), type(uint256).max);
     }
 
     function _defaultParams() internal pure returns (MarketParams memory) {
@@ -66,16 +74,12 @@ contract BeliefMarketTest is Test {
     }
 
     function _initializeMarket() internal {
-        market.initialize(POST_ID, address(usdc), _defaultParams(), address(0), 0);
+        market.initialize(POST_ID, address(vault), _defaultParams(), address(0), 0);
     }
 
     function _initializeMarketWithAuthor(uint256 authorCommitment) internal {
-        // Simulate factory behavior: transfer USDC to market before initialize
-        if (authorCommitment > 0) {
-            vm.prank(author);
-            usdc.transfer(address(market), authorCommitment);
-        }
-        market.initialize(POST_ID, address(usdc), _defaultParams(), author, authorCommitment);
+        // Vault pulls USDC from author during initialize (no pre-transfer needed)
+        market.initialize(POST_ID, address(vault), _defaultParams(), author, authorCommitment);
     }
 
     /*//////////////////////////////////////////////////////////////
@@ -86,7 +90,7 @@ contract BeliefMarketTest is Test {
         _initializeMarket();
 
         assertEq(market.postId(), POST_ID);
-        assertEq(address(market.usdc()), address(usdc));
+        assertEq(address(market.vault()), address(vault));
         assertEq(market.factory(), address(this));
 
         MarketParams memory params = market.getMarketParams();
@@ -116,7 +120,7 @@ contract BeliefMarketTest is Test {
         _initializeMarket();
 
         vm.expectRevert("Already initialized");
-        market.initialize(POST_ID, address(usdc), _defaultParams(), address(0), 0);
+        market.initialize(POST_ID, address(vault), _defaultParams(), address(0), 0);
     }
 
     /*//////////////////////////////////////////////////////////////
@@ -776,7 +780,7 @@ contract BeliefMarketTest is Test {
         _initializeMarket();
 
         vm.startPrank(alice);
-        usdc.approve(address(market), amount);
+        usdc.approve(address(vault), amount);
         uint256 positionId = market.commitSupport(amount);
         vm.stopPrank();
 
@@ -936,7 +940,7 @@ contract BeliefMarketTest is Test {
         MarketParams memory customParams = _defaultParams();
         customParams.earlyWithdrawPenaltyBps = 0;
 
-        market.initialize(POST_ID, address(usdc), customParams, address(0), 0);
+        market.initialize(POST_ID, address(vault), customParams, address(0), 0);
 
         vm.prank(alice);
         uint256 positionId = market.commitSupport(1000e6);

@@ -76,6 +76,10 @@ interface IBeliefFactory {
     /// @return usdc Address of the USDC token
     function usdc() external view returns (address);
 
+    /// @notice Get the vault address
+    /// @return vault Address of the BeliefVault
+    function getVault() external view returns (address);
+
     /// @notice Get total number of markets created
     /// @return count Number of markets
     function marketCount() external view returns (uint256 count);

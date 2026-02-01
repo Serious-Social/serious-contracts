@@ -3,18 +3,16 @@ pragma solidity ^0.8.20;
 
 import {Clones} from "@openzeppelin/contracts/proxy/Clones.sol";
 import {Ownable} from "@openzeppelin/contracts/access/Ownable.sol";
-import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
-import {SafeERC20} from "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
 import {IBeliefFactory} from "./interfaces/IBeliefFactory.sol";
+import {IBeliefVault} from "./interfaces/IBeliefVault.sol";
 import {BeliefMarket} from "./BeliefMarket.sol";
+import {BeliefVault} from "./BeliefVault.sol";
 import {MarketParams} from "./types/BeliefTypes.sol";
 
 /// @title BeliefFactory
 /// @notice Factory for creating BeliefMarket instances using minimal proxies
 /// @dev Uses EIP-1167 clones for gas-efficient deployment
 contract BeliefFactory is IBeliefFactory, Ownable {
-    using SafeERC20 for IERC20;
-
     /*//////////////////////////////////////////////////////////////
                                 STORAGE
     //////////////////////////////////////////////////////////////*/
@@ -24,6 +22,9 @@ contract BeliefFactory is IBeliefFactory, Ownable {
 
     /// @notice The USDC token address
     address public immutable usdc;
+
+    /// @notice The vault that holds all USDC across markets
+    IBeliefVault public immutable vault;
 
     /// @notice Default parameters for new markets
     MarketParams private _defaultParams;
@@ -49,6 +50,9 @@ contract BeliefFactory is IBeliefFactory, Ownable {
 
         // Deploy the implementation contract
         implementation = address(new BeliefMarket());
+
+        // Deploy the vault
+        vault = IBeliefVault(address(new BeliefVault(address(this), usdc_)));
     }
 
     /*//////////////////////////////////////////////////////////////
@@ -104,6 +108,11 @@ contract BeliefFactory is IBeliefFactory, Ownable {
                           INTERNAL FUNCTIONS
     //////////////////////////////////////////////////////////////*/
 
+    /// @inheritdoc IBeliefFactory
+    function getVault() external view returns (address) {
+        return address(vault);
+    }
+
     /// @notice Internal function to create and initialize a market
     function _createMarket(bytes32 postId, uint256 initialCommitment, MarketParams memory params)
         internal
@@ -114,17 +123,15 @@ contract BeliefFactory is IBeliefFactory, Ownable {
         // Deploy minimal proxy
         market = Clones.clone(implementation);
 
+        // Register market with vault before initialize (so market can pull USDC)
+        vault.registerMarket(market);
+
         // Store mapping
         _markets[postId] = market;
         _marketCount++;
 
-        // If author is providing initial commitment, transfer USDC to market first
-        if (initialCommitment > 0) {
-            IERC20(usdc).safeTransferFrom(msg.sender, market, initialCommitment);
-        }
-
-        // Initialize the market
-        BeliefMarket(market).initialize(postId, usdc, params, msg.sender, initialCommitment);
+        // Initialize the market (vault pulls USDC from author during init if needed)
+        BeliefMarket(market).initialize(postId, address(vault), params, msg.sender, initialCommitment);
 
         emit MarketCreated(postId, market, msg.sender);
     }

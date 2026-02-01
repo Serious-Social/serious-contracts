@@ -1,8 +1,7 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.20;
 
-import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
-import {SafeERC20} from "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
+import {IBeliefVault} from "./interfaces/IBeliefVault.sol";
 import {IBeliefMarket} from "./interfaces/IBeliefMarket.sol";
 import {Side, Pool, Position, MarketParams, MarketState} from "./types/BeliefTypes.sol";
 
@@ -11,8 +10,6 @@ import {Side, Pool, Position, MarketParams, MarketState} from "./types/BeliefTyp
 /// @dev Implements time-weighted signal mechanics where patience is rewarded over speed
 /// Uses EIP-1167 minimal proxy pattern for gas-efficient deployment
 contract BeliefMarket is IBeliefMarket {
-    using SafeERC20 for IERC20;
-
     /*//////////////////////////////////////////////////////////////
                                CONSTANTS
     //////////////////////////////////////////////////////////////*/
@@ -39,8 +36,8 @@ contract BeliefMarket is IBeliefMarket {
     /// @notice The factory that created this market
     address public factory;
 
-    /// @notice The USDC token used for staking
-    IERC20 public usdc;
+    /// @notice The vault that holds USDC for all markets
+    IBeliefVault public vault;
 
     /// @notice Market configuration parameters
     MarketParams public params;
@@ -90,13 +87,13 @@ contract BeliefMarket is IBeliefMarket {
 
     /// @notice Initialize the market (called by factory via clone pattern)
     /// @param postId_ The post ID this market tracks
-    /// @param usdc_ The USDC token address
+    /// @param vault_ The vault address that holds USDC
     /// @param params_ Market configuration parameters
     /// @param author_ The post author (for initial commitment)
     /// @param initialCommitment_ Author's initial stake amount (0 if none)
     function initialize(
         bytes32 postId_,
-        address usdc_,
+        address vault_,
         MarketParams calldata params_,
         address author_,
         uint256 initialCommitment_
@@ -106,7 +103,7 @@ contract BeliefMarket is IBeliefMarket {
 
         postId = postId_;
         factory = msg.sender;
-        usdc = IERC20(usdc_);
+        vault = IBeliefVault(vault_);
         params = params_;
 
         // Start position IDs at 1 (0 indicates non-existent)
@@ -152,8 +149,8 @@ contract BeliefMarket is IBeliefMarket {
             pool.principal -= pos.amount;
             pool.weightedTimestampSum -= pos.amount * pos.depositTimestamp;
 
-            // Transfer principal back to user
-            usdc.safeTransfer(msg.sender, pos.amount);
+            // Release principal from vault to user
+            vault.releaseFromMarket(msg.sender, pos.amount);
 
             emit Withdrawn(positionId, msg.sender, pos.amount);
             if (rewardsClaimed > 0) {
@@ -178,9 +175,9 @@ contract BeliefMarket is IBeliefMarket {
                 _addToSrp(penalty, "early_withdraw");
             }
 
-            // Transfer remaining principal to user
+            // Release remaining principal from vault to user
             uint256 returnAmount = pos.amount - penalty;
-            usdc.safeTransfer(msg.sender, returnAmount);
+            vault.releaseFromMarket(msg.sender, returnAmount);
 
             emit EarlyWithdrawn(positionId, msg.sender, returnAmount, penalty);
         }
@@ -297,8 +294,8 @@ contract BeliefMarket is IBeliefMarket {
     function _commit(Side side, uint256 amount) internal returns (uint256 positionId) {
         if (amount < params.minStake || amount > params.maxStake) revert StakeOutOfRange();
 
-        // Transfer USDC from sender
-        usdc.safeTransferFrom(msg.sender, address(this), amount);
+        // Lock USDC in vault
+        vault.lockForMarket(msg.sender, amount);
 
         uint256 netAmount = amount;
         uint256 fee = 0;
@@ -342,10 +339,11 @@ contract BeliefMarket is IBeliefMarket {
     }
 
     /// @notice Handle author's initial commitment (no late entry fee)
-    /// @dev USDC is already transferred to this contract by the factory
+    /// @dev Vault pulls USDC directly from the author
     function _commitAsAuthor(address author, uint256 amount) internal {
         if (amount < params.minStake || amount > params.maxStake) revert StakeOutOfRange();
-        // Note: USDC already transferred by factory before initialize() is called
+        // Lock USDC from author via vault
+        vault.lockForMarket(author, amount);
 
         // Author pays premium to SRP
         uint256 premium = (amount * params.authorPremiumBps) / BPS;
@@ -400,8 +398,8 @@ contract BeliefMarket is IBeliefMarket {
         pos.claimedRewards += claimable;
         srpBalance -= claimable;
 
-        // Transfer rewards
-        usdc.safeTransfer(msg.sender, claimable);
+        // Release rewards from vault
+        vault.releaseFromMarket(msg.sender, claimable);
 
         return claimable;
     }

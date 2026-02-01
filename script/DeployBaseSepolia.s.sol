@@ -26,8 +26,8 @@ contract DeployBaseSepolia is Script {
 
         // Default market params
         MarketParams memory defaultParams = MarketParams({
-            lockPeriod: 30 days,
-            minRewardDuration: 7 days,
+            lockPeriod: 7 days,
+            minRewardDuration: 12 hours,
             lateEntryFeeBaseBps: 50, // 0.5%
             lateEntryFeeMaxBps: 500, // 5%
             lateEntryFeeScale: 1000e6, // +1 bps per $1000
@@ -48,6 +48,7 @@ contract DeployBaseSepolia is Script {
         console.log("=== Deployment Summary ===");
         console.log("MockUSDC:", address(usdc));
         console.log("BeliefFactory:", address(factory));
+        console.log("BeliefVault:", factory.getVault());
         console.log("Deployer balance:", usdc.balanceOf(deployer) / 1e6, "USDC");
     }
 }

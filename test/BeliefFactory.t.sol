@@ -4,6 +4,7 @@ pragma solidity ^0.8.20;
 import {Test} from "forge-std/Test.sol";
 import {BeliefFactory} from "../src/BeliefFactory.sol";
 import {BeliefMarket} from "../src/BeliefMarket.sol";
+import {BeliefVault} from "../src/BeliefVault.sol";
 import {IBeliefFactory} from "../src/interfaces/IBeliefFactory.sol";
 import {Side, Position, MarketParams, MarketState} from "../src/types/BeliefTypes.sol";
 import {MockUSDC} from "../src/mock/MockUSDC.sol";
@@ -40,11 +41,12 @@ contract BeliefFactoryTest is Test {
         usdc.mint(alice, 100_000e6);
         usdc.mint(bob, 100_000e6);
 
-        // Approve factory for all users
+        // Approve vault (not factory) for all users
+        address vaultAddr = factory.getVault();
         vm.prank(alice);
-        usdc.approve(address(factory), type(uint256).max);
+        usdc.approve(vaultAddr, type(uint256).max);
         vm.prank(bob);
-        usdc.approve(address(factory), type(uint256).max);
+        usdc.approve(vaultAddr, type(uint256).max);
     }
 
     function _defaultParams() internal pure returns (MarketParams memory) {
@@ -71,6 +73,7 @@ contract BeliefFactoryTest is Test {
         assertEq(factory.owner(), owner);
         assertEq(factory.marketCount(), 0);
         assertTrue(factory.implementation() != address(0));
+        assertTrue(factory.getVault() != address(0));
 
         MarketParams memory params = factory.getDefaultParams();
         assertEq(params.lockPeriod, LOCK_PERIOD);
@@ -98,7 +101,7 @@ contract BeliefFactoryTest is Test {
         // Verify market is initialized correctly
         BeliefMarket beliefMarket = BeliefMarket(market);
         assertEq(beliefMarket.postId(), POST_ID_1);
-        assertEq(address(beliefMarket.usdc()), address(usdc));
+        assertEq(address(beliefMarket.vault()), factory.getVault());
         assertEq(beliefMarket.factory(), address(factory));
     }
 
@@ -109,9 +112,9 @@ contract BeliefFactoryTest is Test {
         vm.prank(alice);
         address market = factory.createMarket(POST_ID_1, commitment);
 
-        // Verify USDC was transferred
+        // Verify USDC was transferred to vault (not market)
         assertEq(usdc.balanceOf(alice), balanceBefore - commitment);
-        assertEq(usdc.balanceOf(market), commitment);
+        assertEq(usdc.balanceOf(factory.getVault()), commitment);
 
         // Verify author has a position
         BeliefMarket beliefMarket = BeliefMarket(market);
@@ -264,9 +267,7 @@ contract BeliefFactoryTest is Test {
         // Warp to build weight
         vm.warp(block.timestamp + 1 days);
 
-        // Bob stakes on oppose side
-        vm.prank(bob);
-        usdc.approve(market, type(uint256).max);
+        // Bob stakes on oppose side (already approved vault in setUp)
         vm.prank(bob);
         beliefMarket.commitOppose(5_000e6);
 
@@ -307,14 +308,14 @@ contract BeliefFactoryTest is Test {
         usdc.mint(alice, commitment);
 
         vm.startPrank(alice);
-        usdc.approve(address(factory), commitment);
+        usdc.approve(factory.getVault(), commitment);
         address market = factory.createMarket(POST_ID_1, commitment);
         vm.stopPrank();
 
         assertTrue(market != address(0));
         assertEq(factory.marketCount(), 1);
 
-        // Verify all funds ended up in the market
-        assertEq(usdc.balanceOf(market), commitment);
+        // Verify all funds ended up in the vault
+        assertEq(usdc.balanceOf(factory.getVault()), commitment);
     }
 }
