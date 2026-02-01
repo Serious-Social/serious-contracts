@@ -22,18 +22,22 @@ Prediction markets solve signal extraction but require objective resolution, are
 
 ```
 BeliefFactory
+    ├── deploys BeliefVault (one per factory, holds all USDC)
     └── creates BeliefMarket (one per post)
             ├── Support Pool
             ├── Oppose Pool
             └── Signal Reward Pool (SRP)
 ```
 
+Users approve the vault once. Markets never hold tokens directly — they call the vault to pull and release USDC on behalf of users. Per-market balance isolation in the vault prevents a compromised market from draining funds belonging to other markets.
+
 ### Core Contracts
 
 | Contract | Description |
 |----------|-------------|
-| `BeliefFactory` | Creates BeliefMarket instances using EIP-1167 minimal proxies |
-| `BeliefMarket` | Holds pools, manages positions, calculates belief curve and rewards |
+| `BeliefFactory` | Creates BeliefMarket instances using EIP-1167 minimal proxies, deploys and owns the vault |
+| `BeliefMarket` | Manages positions, calculates belief curve and rewards, delegates custody to the vault |
+| `BeliefVault` | Centralized USDC custody with per-market balance tracking and access control |
 
 ## Key Formulas
 
@@ -83,7 +87,8 @@ Scales with market size. First staker pays no fee.
 ## Fee Sources
 
 1. **Author Challenge Premium** — percentage of author's initial commitment (signals willingness to be challenged)
-2. **Late Entry Fee** — small fee when joining an already-active market
+2. **Late Entry Fee** — graduated fee when joining an already-active market (scales with total principal)
+3. **Early Withdrawal Penalty** — penalty for withdrawing before the lock period expires (skipped if no remaining stakers)
 
 All fees flow to the Signal Reward Pool and are distributed to stakers based on time-weighted contribution.
 
@@ -93,8 +98,7 @@ All fees flow to the Signal Reward Pool and are distributed to stakers based on 
 |-----------|---------|
 | `lockPeriod` | Principal locked for duration (e.g., 30 days) |
 | `minRewardDuration` | Minimum stake time before rewards accrue |
-| `maxSrpBps` | Cap on SRP as % of total principal |
-| `maxUserRewardBps` | Cap on per-user rewards as multiple of fees paid |
+| `earlyWithdrawPenaltyBps` | Penalty for withdrawing before lock expires (feeds SRP) |
 | `minStake` / `maxStake` | Bounds on individual stake amounts |
 
 ## Usage
