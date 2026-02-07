@@ -935,19 +935,24 @@ contract BeliefMarketTest is Test {
         assertEq(balanceAfter - balanceBefore, amount, "Normal withdraw should return full principal");
     }
 
-    function test_EarlyWithdraw_RevertsIfDisabled() public {
-        // Use params with earlyWithdrawPenaltyBps = 0
+    function test_EarlyWithdraw_ZeroPenalty() public {
+        // Use params with earlyWithdrawPenaltyBps = 0 — should still allow early exit, just no penalty
         MarketParams memory customParams = _defaultParams();
         customParams.earlyWithdrawPenaltyBps = 0;
 
         market.initialize(POST_ID, address(vault), customParams, address(0), 0);
 
+        uint256 amount = 1000e6;
         vm.prank(alice);
-        uint256 positionId = market.commitSupport(1000e6);
+        uint256 positionId = market.commitSupport(amount);
+
+        uint256 balanceBefore = usdc.balanceOf(alice);
 
         vm.prank(alice);
-        vm.expectRevert(IBeliefMarket.EarlyWithdrawDisabled.selector);
         market.withdraw(positionId);
+
+        uint256 balanceAfter = usdc.balanceOf(alice);
+        assertEq(balanceAfter - balanceBefore, amount, "Should return full principal with 0% penalty");
     }
 
     function test_EarlyWithdraw_RevertsIfAlreadyWithdrawn() public {
@@ -1082,6 +1087,104 @@ contract BeliefMarketTest is Test {
         vm.prank(bob);
         uint256 newPos = market.commitSupport(500e6);
         assertGt(newPos, 0);
+    }
+
+    /*//////////////////////////////////////////////////////////////
+                    UNALLOCATED SRP TESTS
+    //////////////////////////////////////////////////////////////*/
+
+    function test_UnallocatedSrp_AuthorPremiumDistributed() public {
+        // Author creates market with initial commitment — premium goes to SRP
+        // At that point totalWeight is 0, so funds should be tracked as unallocated
+        _initializeMarketWithAuthor(10_000e6);
+
+        uint256 premium = (10_000e6 * uint256(AUTHOR_PREMIUM_BPS)) / 10000;
+
+        // Premium should be in srpBalance but marked as unallocated
+        assertEq(market.srpBalance(), premium, "SRP should hold author premium");
+        assertEq(market.unallocatedSrp(), premium, "Premium should be unallocated (no weight at deposit)");
+
+        // Accumulators should still be zero (nothing distributed yet)
+        assertEq(market.rewardPerPrincipalTime(), 0);
+        assertEq(market.rewardPerPrincipalPerTime(), 0);
+
+        // Wait so author builds weight
+        vm.warp(block.timestamp + 1 days);
+
+        // Alice stakes — pays late entry fee which triggers _addToSrp with totalWeight > 0
+        // This should flush the unallocated author premium through the accumulators
+        vm.prank(alice);
+        market.commitSupport(10_000e6);
+
+        assertEq(market.unallocatedSrp(), 0, "Unallocated SRP should be flushed");
+        assertGt(market.rewardPerPrincipalTime(), 0, "Accumulators should be updated");
+        assertGt(market.rewardPerPrincipalPerTime(), 0, "Accumulators should be updated");
+
+        // Wait past min reward duration
+        vm.warp(block.timestamp + MIN_REWARD_DURATION + 1);
+
+        // Author should have claimable rewards from the premium + Alice's entry fee
+        uint256 authorPending = market.pendingRewards(1);
+        assertGt(authorPending, 0, "Author should have claimable rewards from flushed premium");
+
+        // Author can actually claim them
+        uint256 balanceBefore = usdc.balanceOf(author);
+        vm.prank(author);
+        market.claimRewards(1);
+        uint256 balanceAfter = usdc.balanceOf(author);
+        assertEq(balanceAfter - balanceBefore, authorPending);
+    }
+
+    function test_UnallocatedSrp_NoStuckFundsAfterFullWithdraw() public {
+        // Author creates market — premium is unallocated
+        _initializeMarketWithAuthor(10_000e6);
+
+        // Alice stakes (triggers flush of unallocated SRP)
+        vm.warp(block.timestamp + 1 days);
+        vm.prank(alice);
+        uint256 alicePos = market.commitSupport(10_000e6);
+
+        // Wait past lock for both
+        vm.warp(block.timestamp + LOCK_PERIOD + 1);
+
+        // Both withdraw (auto-claiming rewards)
+        vm.prank(author);
+        market.withdraw(1);
+        vm.prank(alice);
+        market.withdraw(alicePos);
+
+        // SRP should be nearly empty — only rounding dust
+        uint256 srpRemaining = market.srpBalance();
+        assertLe(srpRemaining, 2, "SRP should have at most rounding dust after full withdrawal");
+        assertEq(market.unallocatedSrp(), 0, "No unallocated SRP should remain");
+    }
+
+    function test_UnallocatedSrp_MultipleZeroWeightDeposits() public {
+        // Initialize without author so we can control timing
+        _initializeMarket();
+
+        // First staker — no fee, no SRP, weight starts at 0
+        vm.prank(alice);
+        market.commitSupport(1000e6);
+
+        // Second staker in same block — weight is still 0 for alice (deposited this block)
+        // Entry fee goes to SRP but totalWeight is 0
+        vm.prank(bob);
+        market.commitOppose(1000e6);
+
+        // The entry fee from Bob should be unallocated
+        uint256 unalloc = market.unallocatedSrp();
+        assertGt(unalloc, 0, "Entry fee should be unallocated when totalWeight is 0");
+
+        // Warp so weight builds
+        vm.warp(block.timestamp + 1 days);
+
+        // Charlie stakes — triggers flush
+        vm.prank(charlie);
+        market.commitSupport(1000e6);
+
+        assertEq(market.unallocatedSrp(), 0, "Unallocated SRP should be flushed after weight exists");
+        assertGt(market.rewardPerPrincipalTime(), 0, "Accumulators should reflect flushed funds");
     }
 
     function test_EarlyWithdraw_EmitsEvent() public {

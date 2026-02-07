@@ -106,11 +106,22 @@ Users interact by staking USDC into either pool.
 When a user stakes:
 - Principal is **locked** for `LOCK_PERIOD` (e.g. 30 days)
 - After lock, principal becomes withdrawable
+- An entry fee is deducted and routed to the SRP; only the net amount is recorded as principal
+- The first staker pays no entry fee; the fee scales upward with total principal already staked
+
+### Early Withdrawal
+
+Early withdrawal is **always allowed** — users are never trapped. If a user withdraws before `LOCK_PERIOD` expires:
+- A **penalty** (configurable, e.g. 15% of principal) is deducted
+- The penalty is routed to the SRP (only if remaining stakers exist to receive it)
+- Pending USDC rewards are forfeited
+- If `earlyWithdrawPenaltyBps = 0`, the user exits with no penalty (but still forfeits rewards)
 
 ### Purpose
 
 - Lock creates seriousness
-- Withdrawal ensures non‑punitive design
+- Normal withdrawal ensures non‑punitive design
+- Early withdrawal is allowed but costly — it penalizes impatience while keeping the door open
 - Silence ≠ loss
 
 ---
@@ -148,14 +159,20 @@ Interpretation:
 
 ### Funding Sources
 
-Only two fee sources exist in v0:
+Three fee sources fund the SRP in v0:
 
 1. **Author Challenge Premium**
-   - Small % (e.g. 1–3%) of author’s initial commit
+   - Small % (e.g. 1–3%) of author's initial commit
    - Signals willingness to be challenged
 
-2. **Late‑Entry Friction**
-   - Small fee when joining an already‑active market
+2. **Entry Fee (Sliding Scale)**
+   - Fee charged on every stake (except the first staker, who pays nothing)
+   - Scales with total principal already in the market: `feeBps = min(baseFee + totalPrincipal / scale, maxFee)`
+   - Early participants pay less; later participants pay more
+
+3. **Early Withdrawal Penalty**
+   - Penalty % of principal forfeited by impatient stakers (see §5)
+   - Only collected when remaining stakers exist to receive it
 
 All fees go into the **Signal Reward Pool (SRP)**.
 
@@ -170,26 +187,61 @@ They are compensated for **providing durable signal**.
 
 ## 8. Reward Distribution Mechanism
 
-### Optional Enhancement: Yield-Bearing Escrow (Aave)
+Rewards are distributed from the SRP using an **O(1) dual accumulator** pattern (adapted from Synthetix `StakingRewards`), extended to weight rewards by each position's *time in the market*.
+
+### Accumulators
+
+The contract maintains two global accumulators, updated each time fees enter the SRP:
+
+```
+A += (fee × t_checkpoint × RAY) / W_total(t)
+B += (fee × RAY) / W_total(t)
+```
+
+Where `W_total(t) = W_support(t) + W_oppose(t)` is the total time‑weighted signal across both sides at the checkpoint, and `RAY = 1e27` provides high‑precision fixed‑point math.
+
+### Per‑Position Reward Calculation
+
+When a position is created or claims rewards, it snapshots `(A₀, B₀)`. Pending rewards at any later point are:
+
+```
+pending = amount × (ΔA − t_deposit × ΔB) / RAY
+```
+
+Where `ΔA = A − A₀` and `ΔB = B − B₀`.
+
+This is equivalent to summing `amount × (t_checkpoint − t_deposit) × fee / W_total` over every fee event — but computed in O(1) regardless of how many fee events or positions exist.
+
+### Effects
+
+- Early + patient stakers earn more (larger `t_checkpoint − t_deposit`)
+- Flash stakers earn little
+- Both support and oppose can earn
+- Rewards are claimable only after `minRewardDuration` has elapsed
+
+No one "wins" — they earn for staying.
+
+### Minimum Reward Duration
+
+Positions must wait at least `minRewardDuration` (e.g. 7 days) after deposit before any rewards can be claimed. This prevents micro‑staking to farm fee events.
+
+---
+
+## 8a. Optional Enhancement: Yield‑Bearing Escrow (Aave)
 
 **Idea:** While staked, committed USDC can be deposited into a conservative lending protocol (e.g., Aave) so that generated yield *automatically funds the Signal Reward Pool (SRP)*.
 
 **Rationale:**
-- Reduces opportunity cost of long-term commitment
+- Reduces opportunity cost of long‑term commitment
 - Makes rewards endogenous to time and scale of commitment
 - Decreases reliance on author challenge premiums alone
-- Preserves non-zero-sum economics (principal is never at risk)
+- Preserves non‑zero‑sum economics (principal is never at risk)
 
 **Mechanism:**
-- All committed principal is held in a yield-bearing vault adapter
+- All committed principal is held in a yield‑bearing vault adapter
 - Principal remains fully attributable to users for withdrawal after lock
 - Net yield (interest minus protocol fees) is periodically skimmed
 - Skimmed yield is routed to the SRP for the associated BeliefMarket
-
-**Distribution:**
-- Yield-derived SRP funds are streamed using the same time-weighted rule:
-  - Pro-rata by side weight `W_side(t)`
-  - Then pro-rata by individual contribution to that side
 
 **Safety & Constraints:**
 - Use only audited, conservative markets (e.g., USDC on Aave)
@@ -198,36 +250,14 @@ They are compensated for **providing durable signal**.
 - Emergency pause must allow immediate withdrawal of principal
 
 **v0 Recommendation:**
-- Make yield-bearing escrow **feature-flagged** or disabled by default
+- Feature‑flagged via `yieldBearingEscrow` in `MarketParams` — disabled by default
 - Enable only after base belief mechanics are validated
-
----
-
-## 8. Reward Distribution Mechanism
-
-Rewards stream out of the SRP over time.
-
-At any time `t`:
-
-```
-RewardRate_side(t) = SRP_rate * W_side(t) / (W_support(t) + W_oppose(t))
-```
-
-Within a side:
-- Rewards are distributed pro‑rata by individual contribution to `W_side`
-
-Effects:
-- Early + patient stakers earn more
-- Flash stakers earn little
-- Both support and oppose can earn
-
-No one "wins" — they earn for staying.
 
 ---
 
 ## 9. Counter‑Staking (Bounded Adversariality)
 
-Counter‑staking is incentivized but capped.
+Counter‑staking is incentivized but bounded.
 
 ### Why Counter‑Stake?
 
@@ -235,64 +265,102 @@ Counter‑staking is incentivized but capped.
 - Prevent unchecked drift
 - Improve epistemic clarity
 
-### Why It’s Not Gambling
+### Why It's Not Gambling
 
 - No principal transfer
 - No resolution event
-- Capped upside
-- Time‑weighted rewards
-
-Counter‑staking earns from the same SRP using the same weight logic.
+- Time‑weighted rewards from SRP — same accumulators, same math
+- Both sides earn from the same pool; the heavier side simply earns a larger share
 
 ---
 
-## 10. Caps and Safety Rails (Mandatory)
+## 10. Configurable Parameters and Safety Rails
 
-- Max SRP per post (e.g. ≤10% of total principal)
-- Max per‑user reward (e.g. ≤2× fees paid)
-- Minimum stake duration before rewards accrue
+Each market is created with a `MarketParams` struct:
+
+| Parameter | Description | Default |
+|---|---|---|
+| `lockPeriod` | Duration principal is locked (seconds) | 30 days |
+| `minRewardDuration` | Time before rewards start accruing | 3 days |
+| `lateEntryFeeBaseBps` | Base entry fee (bps) | 100 (1%) |
+| `lateEntryFeeMaxBps` | Maximum entry fee (bps) | 750 (7.5%) |
+| `lateEntryFeeScale` | Principal amount that adds 1 bps | $1,000 USDC |
+| `authorPremiumBps` | Author challenge premium (bps) | 1000 (10%) |
+| `earlyWithdrawPenaltyBps` | Early withdrawal penalty (bps); 0 = no penalty | 1500 (15%) |
+| `yieldBearingEscrow` | Enable Aave yield integration | false |
+| `minStake` | Minimum stake amount | $5 USDC |
+| `maxStake` | Maximum stake amount | $1,000 USDC |
+
+### Mandatory Safety Rails
+
+- Min/max stake bounds prevent dust attacks and whale dominance
+- `minRewardDuration` prevents micro‑staking to farm fee events
+- Entry fee cap prevents excessive extraction
 - No leverage
 - No liquidation
 
-These prevent degenerate farming behavior.
+The factory owner can update default parameters for new markets via `setDefaultParams`.
 
 ---
 
 ## 11. Withdrawals and Exits
 
-- Principal withdrawable after lock
-- Early exit earns little to no reward
-- Exits shift the belief curve (information, not punishment)
+### Normal Withdrawal (after lock period)
 
-Optional later:
-- Small early‑exit fee
+- Principal is fully returned via the vault
+- Pending SRP rewards are auto‑claimed in the same transaction
+- The position's principal and weighted timestamp are removed from the pool, shifting the belief curve
+
+### Early Withdrawal (before lock period)
+
+- Always allowed — users are never trapped
+- A penalty (e.g. 15%) is deducted from principal and routed to the SRP
+- All pending USDC rewards are forfeited
+- Remaining principal is returned to the user
+
+In both cases, exits shift the belief curve — this is information, not punishment.
 
 ---
 
-## 12. Contract Architecture (Suggested)
+## 12. Contract Architecture
 
-### BeliefFactory
+### BeliefFactory (`Ownable`)
 
-- Creates BeliefMarket per post
-- Maps postId → market address
+- Deploys a single **BeliefMarket** implementation contract at construction
+- Deploys a single **BeliefVault** for centralized USDC custody
+- Creates new markets as **EIP‑1167 minimal proxy** clones for gas‑efficient deployment
+- Maps `postId → market address`
+- Holds default `MarketParams`; owner can update via `setDefaultParams`
 
-### BeliefMarket
+### BeliefVault
+
+- Centralized USDC custody across all markets
+- Per‑market balance isolation prevents a compromised market from draining others
+- Only the factory can register new markets
+- Only registered markets can lock / release USDC
+
+### BeliefMarket (clone)
 
 State:
-- Support: `P_s`, `S_s`
-- Oppose: `P_o`, `S_o`
+- Support pool: `principal`, `weightedTimestampSum`
+- Oppose pool: `principal`, `weightedTimestampSum`
 - SRP balance
-- Per‑user position records
-
+- Dual reward accumulators: `rewardPerPrincipalTime`, `rewardPerPrincipalPerTime`
+- Per‑position records (side, timestamps, amount, claimed rewards)
+- Per‑position reward accumulator snapshots
 Functions:
-- `commitSupport(amount)`
-- `commitOppose(amount)`
-- `withdraw(positionId)`
-- `claimRewards(positionId)`
-- `belief(now)` (view)
+- `commitSupport(amount)` / `commitOppose(amount)` — stake USDC to a side
+- `withdraw(positionId)` — withdraw principal (normal or early)
+- `claimRewards(positionId)` — claim pending SRP rewards
+- `belief()` — view current belief curve value (0 to 1e18)
+- `getWeight(side)` — view time‑weighted signal for a side
+- `getMarketState()` — view full market snapshot
+- `pendingRewards(positionId)` — view claimable USDC rewards
+- `getCurrentEntryFeeBps()` — view current entry fee
 
-Token:
-- USDC (ERC‑20)
+### Token
+
+- USDC (ERC‑20, 6 decimals)
 
 ---
 
@@ -308,13 +376,15 @@ This is **infrastructure for serious belief coordination**.
 
 ---
 
-## 14. v0 Scope (Strong Recommendation)
+## 14. v0 Scope
 
-- Binary belief only
+- Binary belief only (SUPPORT / OPPOSE)
 - One market per post
-- No author revenue
+- No author revenue (author pays premium like everyone else)
 - No governance
 - No composability promises
+- Yield‑bearing escrow disabled by default
+- Deploying on Base (USDC: `0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913`)
 
 Goal of v0:
 > Validate that humans will pay for seriousness — not maximize growth.

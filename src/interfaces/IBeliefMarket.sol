@@ -45,6 +45,10 @@ interface IBeliefMarket {
     /// @param source Description of fee source (e.g., "late_entry", "author_premium")
     event SrpFunded(uint256 amount, string source);
 
+    /// @notice Emitted when previously unallocated SRP funds are flushed through accumulators
+    /// @param amount Amount of previously unallocated SRP now distributed
+    event UnallocatedSrpFlushed(uint256 amount);
+
     /*//////////////////////////////////////////////////////////////
                                  ERRORS
     //////////////////////////////////////////////////////////////*/
@@ -69,9 +73,6 @@ interface IBeliefMarket {
 
     /// @notice Thrown when stake amount is outside allowed range
     error StakeOutOfRange();
-
-    /// @notice Thrown when early withdrawal is disabled (earlyWithdrawPenaltyBps == 0)
-    error EarlyWithdrawDisabled();
 
     /*//////////////////////////////////////////////////////////////
                             WRITE FUNCTIONS
@@ -136,4 +137,8 @@ interface IBeliefMarket {
     /// @param user The user address
     /// @return positionIds Array of position IDs owned by the user
     function getUserPositions(address user) external view returns (uint256[] memory positionIds);
+
+    /// @notice Get the current late entry fee in basis points
+    /// @return feeBps The current fee (scales with total principal staked)
+    function getCurrentEntryFeeBps() external view returns (uint256 feeBps);
 }
