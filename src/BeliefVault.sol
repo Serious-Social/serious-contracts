@@ -3,12 +3,13 @@ pragma solidity ^0.8.20;
 
 import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import {SafeERC20} from "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
+import {ReentrancyGuard} from "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
 import {IBeliefVault} from "./interfaces/IBeliefVault.sol";
 
 /// @title BeliefVault
 /// @notice Centralized USDC custody for all belief markets
 /// @dev Per-market balance isolation prevents a compromised market from draining others
-contract BeliefVault is IBeliefVault {
+contract BeliefVault is IBeliefVault, ReentrancyGuard {
     using SafeERC20 for IERC20;
 
     /// @notice The factory that deployed this vault
@@ -49,14 +50,14 @@ contract BeliefVault is IBeliefVault {
     }
 
     /// @inheritdoc IBeliefVault
-    function lockForMarket(address user, uint256 amount) external onlyRegisteredMarket {
+    function lockForMarket(address user, uint256 amount) external onlyRegisteredMarket nonReentrant {
         _usdc.safeTransferFrom(user, address(this), amount);
         _marketBalances[msg.sender] += amount;
         emit Locked(msg.sender, user, amount);
     }
 
     /// @inheritdoc IBeliefVault
-    function releaseFromMarket(address user, uint256 amount) external onlyRegisteredMarket {
+    function releaseFromMarket(address user, uint256 amount) external onlyRegisteredMarket nonReentrant {
         if (_marketBalances[msg.sender] < amount) revert InsufficientMarketBalance();
         _marketBalances[msg.sender] -= amount;
         _usdc.safeTransfer(user, amount);
