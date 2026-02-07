@@ -45,14 +45,21 @@ interface IBeliefFactory {
     /// @dev Author premium is deducted and sent to SRP
     function createMarket(bytes32 postId, uint256 initialCommitment) external returns (address market);
 
-    /// @notice Create a new belief market with custom parameters
-    /// @param postId Unique identifier for the post/claim
-    /// @param initialCommitment Author's initial commitment amount
-    /// @param params Custom market parameters
-    /// @return market Address of the deployed BeliefMarket
-    function createMarketWithParams(bytes32 postId, uint256 initialCommitment, MarketParams calldata params)
-        external
-        returns (address market);
+    /// @notice Pause the factory (no new markets can be created)
+    /// @dev Only callable by owner
+    function pause() external;
+
+    /// @notice Unpause the factory
+    /// @dev Only callable by owner
+    function unpause() external;
+
+    /// @notice Pause the vault (no new deposits, withdrawals still work)
+    /// @dev Only callable by owner
+    function pauseVault() external;
+
+    /// @notice Unpause the vault
+    /// @dev Only callable by owner
+    function unpauseVault() external;
 
     /*//////////////////////////////////////////////////////////////
                             VIEW FUNCTIONS

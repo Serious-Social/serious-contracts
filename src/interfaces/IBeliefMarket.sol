@@ -151,6 +151,10 @@ interface IBeliefMarket {
     /// @return amount Pending SRS amount that would be minted if claimed now
     function pendingReputation(uint256 positionId) external view returns (uint256 amount);
 
+    /// @notice Get the current late entry fee in basis points
+    /// @return feeBps The current fee (scales with total principal staked)
+    function getCurrentEntryFeeBps() external view returns (uint256 feeBps);
+
     /// @notice Get the reputation token address
     /// @return The SeriousnessToken address (address(0) if disabled)
     function reputationToken() external view returns (address);

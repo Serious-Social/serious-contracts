@@ -185,35 +185,6 @@ contract BeliefFactoryTest is Test {
     }
 
     /*//////////////////////////////////////////////////////////////
-                     CREATE MARKET WITH PARAMS TESTS
-    //////////////////////////////////////////////////////////////*/
-
-    function test_CreateMarketWithParams() public {
-        MarketParams memory customParams = MarketParams({
-            lockPeriod: 60 days,
-            minRewardDuration: 14 days,
-            earlyWithdrawPenaltyBps: EARLY_WITHDRAW_PENALTY_BPS,
-            lateEntryFeeBaseBps: 100,
-            lateEntryFeeMaxBps: 1000,
-            lateEntryFeeScale: 500e6,
-            authorPremiumBps: 300,
-            yieldBearingEscrow: false,
-            minStake: MIN_STAKE,
-            maxStake: MAX_STAKE
-        });
-
-        vm.prank(alice);
-        address market = factory.createMarketWithParams(POST_ID_1, 0, customParams);
-
-        BeliefMarket beliefMarket = BeliefMarket(market);
-        MarketParams memory actualParams = beliefMarket.getMarketParams();
-
-        assertEq(actualParams.lockPeriod, 60 days);
-        assertEq(actualParams.minRewardDuration, 14 days);
-        assertEq(actualParams.authorPremiumBps, 300);
-    }
-
-    /*//////////////////////////////////////////////////////////////
                           VIEW FUNCTIONS TESTS
     //////////////////////////////////////////////////////////////*/
 
@@ -256,6 +227,82 @@ contract BeliefFactoryTest is Test {
         assertEq(actualParams.authorPremiumBps, 300);
     }
 
+    function test_SetDefaultParams_RevertIfBpsExceedMax() public {
+        MarketParams memory p = _defaultParams();
+        p.authorPremiumBps = 10_001;
+        vm.prank(owner);
+        vm.expectRevert(IBeliefFactory.InvalidParams.selector);
+        factory.setDefaultParams(p);
+    }
+
+    function test_SetDefaultParams_RevertIfEarlyWithdrawBpsExceedMax() public {
+        MarketParams memory p = _defaultParams();
+        p.earlyWithdrawPenaltyBps = 10_001;
+        vm.prank(owner);
+        vm.expectRevert(IBeliefFactory.InvalidParams.selector);
+        factory.setDefaultParams(p);
+    }
+
+    function test_SetDefaultParams_RevertIfLateEntryBaseExceedsMax() public {
+        MarketParams memory p = _defaultParams();
+        p.lateEntryFeeBaseBps = 600;
+        p.lateEntryFeeMaxBps = 500;
+        vm.prank(owner);
+        vm.expectRevert(IBeliefFactory.InvalidParams.selector);
+        factory.setDefaultParams(p);
+    }
+
+    function test_SetDefaultParams_RevertIfScaleZero() public {
+        MarketParams memory p = _defaultParams();
+        p.lateEntryFeeScale = 0;
+        vm.prank(owner);
+        vm.expectRevert(IBeliefFactory.InvalidParams.selector);
+        factory.setDefaultParams(p);
+    }
+
+    function test_SetDefaultParams_RevertIfMinStakeZero() public {
+        MarketParams memory p = _defaultParams();
+        p.minStake = 0;
+        vm.prank(owner);
+        vm.expectRevert(IBeliefFactory.InvalidParams.selector);
+        factory.setDefaultParams(p);
+    }
+
+    function test_SetDefaultParams_RevertIfMinStakeExceedsMaxStake() public {
+        MarketParams memory p = _defaultParams();
+        p.minStake = 1000e6;
+        p.maxStake = 100e6;
+        vm.prank(owner);
+        vm.expectRevert(IBeliefFactory.InvalidParams.selector);
+        factory.setDefaultParams(p);
+    }
+
+    function test_SetDefaultParams_RevertIfLockPeriodTooShort() public {
+        MarketParams memory p = _defaultParams();
+        p.lockPeriod = 12 hours;
+        p.minRewardDuration = 6 hours;
+        vm.prank(owner);
+        vm.expectRevert(IBeliefFactory.InvalidParams.selector);
+        factory.setDefaultParams(p);
+    }
+
+    function test_SetDefaultParams_RevertIfLockPeriodTooLong() public {
+        MarketParams memory p = _defaultParams();
+        p.lockPeriod = 366 days;
+        vm.prank(owner);
+        vm.expectRevert(IBeliefFactory.InvalidParams.selector);
+        factory.setDefaultParams(p);
+    }
+
+    function test_SetDefaultParams_RevertIfMinRewardDurationExceedsLockPeriod() public {
+        MarketParams memory p = _defaultParams();
+        p.minRewardDuration = 31 days;
+        p.lockPeriod = 30 days;
+        vm.prank(owner);
+        vm.expectRevert(IBeliefFactory.InvalidParams.selector);
+        factory.setDefaultParams(p);
+    }
+
     function test_SetDefaultParams_RevertIfNotOwner() public {
         MarketParams memory newParams = _defaultParams();
 
@@ -272,6 +319,77 @@ contract BeliefFactoryTest is Test {
         vm.expectEmit(true, true, true, true);
         emit IBeliefFactory.DefaultParamsUpdated(newParams);
         factory.setDefaultParams(newParams);
+    }
+
+    /*//////////////////////////////////////////////////////////////
+                          PAUSE TESTS
+    //////////////////////////////////////////////////////////////*/
+
+    function test_Pause_BlocksCreateMarket() public {
+        vm.prank(owner);
+        factory.pause();
+
+        vm.prank(alice);
+        vm.expectRevert(abi.encodeWithSignature("EnforcedPause()"));
+        factory.createMarket(POST_ID_1, 0);
+    }
+
+    function test_Pause_UnpauseAllowsCreateMarket() public {
+        vm.prank(owner);
+        factory.pause();
+
+        vm.prank(owner);
+        factory.unpause();
+
+        vm.prank(alice);
+        address market = factory.createMarket(POST_ID_1, 0);
+        assertTrue(market != address(0));
+    }
+
+    function test_Pause_OnlyOwner() public {
+        vm.prank(alice);
+        vm.expectRevert();
+        factory.pause();
+    }
+
+    function test_PauseVault_BlocksDeposits() public {
+        // Create market first
+        vm.prank(alice);
+        address market = factory.createMarket(POST_ID_1, 0);
+
+        // Pause vault
+        vm.prank(owner);
+        factory.pauseVault();
+
+        // New commits should fail (vault.lockForMarket reverts)
+        vm.prank(bob);
+        vm.expectRevert(abi.encodeWithSignature("EnforcedPause()"));
+        BeliefMarket(market).commitSupport(100e6);
+    }
+
+    function test_PauseVault_WithdrawalsStillWork() public {
+        // Create market with commitment
+        vm.prank(alice);
+        address market = factory.createMarket(POST_ID_1, 10_000e6);
+
+        // Warp past lock period
+        vm.warp(block.timestamp + 31 days);
+
+        // Pause vault
+        vm.prank(owner);
+        factory.pauseVault();
+
+        // Withdrawal should still work
+        BeliefMarket beliefMarket = BeliefMarket(market);
+        uint256[] memory positions = beliefMarket.getUserPositions(alice);
+        vm.prank(alice);
+        beliefMarket.withdraw(positions[0]);
+    }
+
+    function test_PauseVault_OnlyOwner() public {
+        vm.prank(alice);
+        vm.expectRevert();
+        factory.pauseVault();
     }
 
     /*//////////////////////////////////////////////////////////////
