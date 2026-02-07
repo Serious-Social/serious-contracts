@@ -7,6 +7,7 @@ import {IBeliefFactory} from "./interfaces/IBeliefFactory.sol";
 import {IBeliefVault} from "./interfaces/IBeliefVault.sol";
 import {BeliefMarket} from "./BeliefMarket.sol";
 import {BeliefVault} from "./BeliefVault.sol";
+import {SeriousnessToken} from "./SeriousnessToken.sol";
 import {MarketParams} from "./types/BeliefTypes.sol";
 
 /// @title BeliefFactory
@@ -25,6 +26,9 @@ contract BeliefFactory is IBeliefFactory, Ownable {
 
     /// @notice The vault that holds all USDC across markets
     IBeliefVault public immutable vault;
+
+    /// @notice The soulbound reputation token
+    address public immutable reputationToken;
 
     /// @notice Default parameters for new markets
     MarketParams private _defaultParams;
@@ -53,6 +57,9 @@ contract BeliefFactory is IBeliefFactory, Ownable {
 
         // Deploy the vault
         vault = IBeliefVault(address(new BeliefVault(address(this), usdc_)));
+
+        // Deploy the reputation token
+        reputationToken = address(new SeriousnessToken(address(vault)));
     }
 
     /*//////////////////////////////////////////////////////////////
@@ -131,7 +138,7 @@ contract BeliefFactory is IBeliefFactory, Ownable {
         _marketCount++;
 
         // Initialize the market (vault pulls USDC from author during init if needed)
-        BeliefMarket(market).initialize(postId, address(vault), params, msg.sender, initialCommitment);
+        BeliefMarket(market).initialize(postId, address(vault), params, msg.sender, initialCommitment, reputationToken);
 
         emit MarketCreated(postId, market, msg.sender);
     }

@@ -45,6 +45,18 @@ interface IBeliefMarket {
     /// @param source Description of fee source (e.g., "late_entry", "author_premium")
     event SrpFunded(uint256 amount, string source);
 
+    /// @notice Emitted when reputation is minted for a position
+    /// @param positionId The position earning reputation
+    /// @param user Address of the recipient
+    /// @param amount Amount of SRS minted
+    event ReputationMinted(uint256 indexed positionId, address indexed user, uint256 amount);
+
+    /// @notice Emitted when reputation is burned for a position (early withdrawal)
+    /// @param positionId The position losing reputation
+    /// @param user Address of the holder
+    /// @param amount Amount of SRS burned
+    event ReputationBurned(uint256 indexed positionId, address indexed user, uint256 amount);
+
     /*//////////////////////////////////////////////////////////////
                                  ERRORS
     //////////////////////////////////////////////////////////////*/
@@ -136,4 +148,13 @@ interface IBeliefMarket {
     /// @param user The user address
     /// @return positionIds Array of position IDs owned by the user
     function getUserPositions(address user) external view returns (uint256[] memory positionIds);
+
+    /// @notice Get pending reputation for a position
+    /// @param positionId The position to query
+    /// @return amount Pending SRS amount that would be minted if claimed now
+    function pendingReputation(uint256 positionId) external view returns (uint256 amount);
+
+    /// @notice Get the reputation token address
+    /// @return The SeriousnessToken address (address(0) if disabled)
+    function reputationToken() external view returns (address);
 }

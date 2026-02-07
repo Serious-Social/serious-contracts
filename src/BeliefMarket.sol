@@ -3,6 +3,7 @@ pragma solidity ^0.8.20;
 
 import {IBeliefVault} from "./interfaces/IBeliefVault.sol";
 import {IBeliefMarket} from "./interfaces/IBeliefMarket.sol";
+import {ISeriousnessToken} from "./interfaces/ISeriousnessToken.sol";
 import {Side, Pool, Position, MarketParams, MarketState} from "./types/BeliefTypes.sol";
 
 /// @title BeliefMarket
@@ -22,6 +23,13 @@ contract BeliefMarket is IBeliefMarket {
 
     /// @notice High precision for reward accumulators (1e27)
     uint256 private constant RAY = 1e27;
+
+    /// @notice Scale factor to convert USDC-seconds to 18-decimal SRS tokens
+    /// @dev USDC is 6 decimals, SRS is 18 decimals, so multiply by 1e12
+    uint256 private constant REPUTATION_SCALE = 1e12;
+
+    /// @notice Number of seconds in one day
+    uint256 private constant SECONDS_PER_DAY = 86_400;
 
     /*//////////////////////////////////////////////////////////////
                                 STORAGE
@@ -82,6 +90,19 @@ contract BeliefMarket is IBeliefMarket {
     mapping(uint256 => uint256) public positionRewardPerPrincipalPerTimePaid;
 
     /*//////////////////////////////////////////////////////////////
+                        REPUTATION TRACKING
+    //////////////////////////////////////////////////////////////*/
+
+    /// @notice The seriousness reputation token (address(0) if disabled)
+    address public reputationToken;
+
+    /// @notice Last timestamp at which reputation was minted for a position
+    mapping(uint256 => uint48) public positionLastReputationMint;
+
+    /// @notice Cumulative reputation minted for a position (for burn on early withdrawal)
+    mapping(uint256 => uint256) public positionReputationMinted;
+
+    /*//////////////////////////////////////////////////////////////
                               INITIALIZATION
     //////////////////////////////////////////////////////////////*/
 
@@ -91,12 +112,14 @@ contract BeliefMarket is IBeliefMarket {
     /// @param params_ Market configuration parameters
     /// @param author_ The post author (for initial commitment)
     /// @param initialCommitment_ Author's initial stake amount (0 if none)
+    /// @param reputationToken_ The SeriousnessToken address (address(0) to disable)
     function initialize(
         bytes32 postId_,
         address vault_,
         MarketParams calldata params_,
         address author_,
-        uint256 initialCommitment_
+        uint256 initialCommitment_,
+        address reputationToken_
     ) external {
         require(!_initialized, "Already initialized");
         _initialized = true;
@@ -105,6 +128,7 @@ contract BeliefMarket is IBeliefMarket {
         factory = msg.sender;
         vault = IBeliefVault(vault_);
         params = params_;
+        reputationToken = reputationToken_;
 
         // Start position IDs at 1 (0 indicates non-existent)
         _nextPositionId = 1;
@@ -162,6 +186,9 @@ contract BeliefMarket is IBeliefMarket {
 
             // Mark withdrawn (forfeits pending rewards — _calculatePendingRewards returns 0)
             pos.withdrawn = true;
+
+            // Burn any previously minted reputation
+            _burnPositionReputation(positionId);
 
             // Update pool state (before _addToSrp so withdrawer is excluded from reward distribution)
             Pool storage pool = pos.side == Side.Support ? supportPool : opposePool;
@@ -274,6 +301,23 @@ contract BeliefMarket is IBeliefMarket {
     /// @inheritdoc IBeliefMarket
     function getUserPositions(address user) external view returns (uint256[] memory positionIds) {
         return _userPositions[user];
+    }
+
+    /// @inheritdoc IBeliefMarket
+    function pendingReputation(uint256 positionId) external view returns (uint256) {
+        if (_positionOwners[positionId] == address(0)) revert PositionNotFound();
+        if (reputationToken == address(0)) return 0;
+
+        Position memory pos = _positions[positionId];
+        if (pos.withdrawn) return 0;
+        if (block.timestamp < pos.depositTimestamp + params.minRewardDuration) return 0;
+
+        uint48 start = positionLastReputationMint[positionId];
+        if (start < pos.depositTimestamp) start = pos.depositTimestamp;
+        uint48 end = uint48(block.timestamp);
+        if (end <= start) return 0;
+
+        return (pos.amount * uint256(end - start) * REPUTATION_SCALE) / SECONDS_PER_DAY;
     }
 
     /// @notice Get the current late entry fee in basis points
@@ -389,6 +433,9 @@ contract BeliefMarket is IBeliefMarket {
             return 0;
         }
 
+        // Mint accrued reputation before processing USDC rewards
+        _mintReputation(positionId, pos);
+
         claimable = _calculatePendingRewards(positionId);
         if (claimable == 0) return 0;
 
@@ -480,6 +527,43 @@ contract BeliefMarket is IBeliefMarket {
 
         uint256 scaledFee = baseFee + (totalPrincipal / scale);
         return _min(scaledFee, maxFee);
+    }
+
+    /// @notice Mint accrued reputation for a position
+    /// @dev Only mints if reputation token is set and minRewardDuration has elapsed
+    function _mintReputation(uint256 positionId, Position storage pos) internal {
+        if (reputationToken == address(0)) return;
+        if (block.timestamp < pos.depositTimestamp + params.minRewardDuration) return;
+
+        uint48 start = positionLastReputationMint[positionId];
+        if (start < pos.depositTimestamp) start = pos.depositTimestamp;
+        uint48 end = uint48(block.timestamp);
+        if (end <= start) return;
+
+        uint256 reputation = (pos.amount * uint256(end - start) * REPUTATION_SCALE) / SECONDS_PER_DAY;
+
+        positionLastReputationMint[positionId] = end;
+        positionReputationMinted[positionId] += reputation;
+
+        address owner = _positionOwners[positionId];
+        ISeriousnessToken(reputationToken).mint(owner, reputation);
+
+        emit ReputationMinted(positionId, owner, reputation);
+    }
+
+    /// @notice Burn all previously minted reputation for a position (early withdrawal penalty)
+    function _burnPositionReputation(uint256 positionId) internal {
+        if (reputationToken == address(0)) return;
+
+        uint256 minted = positionReputationMinted[positionId];
+        if (minted == 0) return;
+
+        positionReputationMinted[positionId] = 0;
+
+        address owner = _positionOwners[positionId];
+        ISeriousnessToken(reputationToken).burn(owner, minted);
+
+        emit ReputationBurned(positionId, owner, minted);
     }
 
     /// @notice Return minimum of two values

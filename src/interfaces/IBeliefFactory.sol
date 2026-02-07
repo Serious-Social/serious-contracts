@@ -83,4 +83,8 @@ interface IBeliefFactory {
     /// @notice Get total number of markets created
     /// @return count Number of markets
     function marketCount() external view returns (uint256 count);
+
+    /// @notice Get the reputation token address
+    /// @return The SeriousnessToken address
+    function reputationToken() external view returns (address);
 }

@@ -5,6 +5,7 @@ import {Test} from "forge-std/Test.sol";
 import {BeliefFactory} from "../src/BeliefFactory.sol";
 import {BeliefMarket} from "../src/BeliefMarket.sol";
 import {BeliefVault} from "../src/BeliefVault.sol";
+import {SeriousnessToken} from "../src/SeriousnessToken.sol";
 import {IBeliefFactory} from "../src/interfaces/IBeliefFactory.sol";
 import {Side, Position, MarketParams, MarketState} from "../src/types/BeliefTypes.sol";
 import {MockUSDC} from "../src/mock/MockUSDC.sol";
@@ -80,6 +81,16 @@ contract BeliefFactoryTest is Test {
         assertEq(params.authorPremiumBps, AUTHOR_PREMIUM_BPS);
     }
 
+    function test_Constructor_DeploysReputationToken() public view {
+        address token = factory.reputationToken();
+        assertTrue(token != address(0), "Reputation token should be deployed");
+
+        SeriousnessToken srs = SeriousnessToken(token);
+        assertEq(srs.vault(), factory.getVault(), "Token vault should match factory vault");
+        assertEq(srs.name(), "Seriousness");
+        assertEq(srs.symbol(), "SRS");
+    }
+
     function test_Constructor_RevertOnZeroUsdc() public {
         vm.expectRevert(IBeliefFactory.InvalidParams.selector);
         new BeliefFactory(address(0), _defaultParams());
@@ -130,6 +141,16 @@ contract BeliefFactoryTest is Test {
         // Verify SRP received premium
         MarketState memory state = beliefMarket.getMarketState();
         assertEq(state.srpBalance, premium);
+    }
+
+    function test_CreateMarket_HasReputationToken() public {
+        vm.prank(alice);
+        address market = factory.createMarket(POST_ID_1, 0);
+
+        BeliefMarket beliefMarket = BeliefMarket(market);
+        assertEq(
+            beliefMarket.reputationToken(), factory.reputationToken(), "Market should have factory's reputation token"
+        );
     }
 
     function test_CreateMarket_EmitsEvent() public {
