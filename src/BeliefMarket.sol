@@ -51,6 +51,9 @@ contract BeliefMarket is IBeliefMarket {
     /// @notice Balance in the Signal Reward Pool
     uint256 public srpBalance;
 
+    /// @notice SRP funds collected when totalWeight was zero, pending distribution
+    uint256 public unallocatedSrp;
+
     /// @notice Next position ID to assign
     uint256 private _nextPositionId;
 
@@ -405,7 +408,9 @@ contract BeliefMarket is IBeliefMarket {
     }
 
     /// @notice Add funds to SRP and update reward accumulators
-    /// @dev Uses Synthetix-style O(1) accumulator pattern adapted for time-weighted stakes
+    /// @dev Uses Synthetix-style O(1) accumulator pattern adapted for time-weighted stakes.
+    ///      When totalWeight is zero, funds are held in unallocatedSrp and flushed through
+    ///      the accumulators on the next call where totalWeight > 0.
     /// @param amount The amount to add to SRP
     /// @param source Description of the fee source (for events)
     function _addToSrp(uint256 amount, string memory source) internal {
@@ -415,10 +420,15 @@ contract BeliefMarket is IBeliefMarket {
 
         uint256 totalWeight = _getTotalWeight();
         if (totalWeight > 0) {
-            rewardPerPrincipalTime += (amount * block.timestamp * RAY) / totalWeight;
-            rewardPerPrincipalPerTime += (amount * RAY) / totalWeight;
+            uint256 distributable = amount + unallocatedSrp;
+            if (unallocatedSrp > 0) {
+                unallocatedSrp = 0;
+            }
+            rewardPerPrincipalTime += (distributable * block.timestamp * RAY) / totalWeight;
+            rewardPerPrincipalPerTime += (distributable * RAY) / totalWeight;
+        } else {
+            unallocatedSrp += amount;
         }
-        // If no weight yet, funds stay in SRP for future distribution
 
         emit SrpFunded(amount, source);
     }
