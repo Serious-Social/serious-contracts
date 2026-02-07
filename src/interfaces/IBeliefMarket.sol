@@ -133,4 +133,8 @@ interface IBeliefMarket {
     /// @param user The user address
     /// @return positionIds Array of position IDs owned by the user
     function getUserPositions(address user) external view returns (uint256[] memory positionIds);
+
+    /// @notice Get the current late entry fee in basis points
+    /// @return feeBps The current fee (scales with total principal staked)
+    function getCurrentEntryFeeBps() external view returns (uint256 feeBps);
 }

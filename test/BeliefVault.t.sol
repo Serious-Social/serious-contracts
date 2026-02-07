@@ -173,6 +173,52 @@ contract BeliefVaultTest is Test {
     }
 
     /*//////////////////////////////////////////////////////////////
+                        PAUSE TESTS
+    //////////////////////////////////////////////////////////////*/
+
+    function test_PauseVault_BlocksLockForMarket() public {
+        vm.prank(factoryAddr);
+        vault.pauseVault();
+
+        vm.prank(market1);
+        vm.expectRevert(abi.encodeWithSignature("EnforcedPause()"));
+        vault.lockForMarket(alice, 1000e6);
+    }
+
+    function test_PauseVault_ReleaseStillWorks() public {
+        // Lock first
+        vm.prank(market1);
+        vault.lockForMarket(alice, 1000e6);
+
+        // Pause
+        vm.prank(factoryAddr);
+        vault.pauseVault();
+
+        // Release should still work
+        vm.prank(market1);
+        vault.releaseFromMarket(alice, 1000e6);
+        assertEq(vault.marketBalance(market1), 0);
+    }
+
+    function test_PauseVault_OnlyFactory() public {
+        vm.prank(alice);
+        vm.expectRevert(IBeliefVault.NotFactory.selector);
+        vault.pauseVault();
+    }
+
+    function test_UnpauseVault_AllowsLockForMarket() public {
+        vm.prank(factoryAddr);
+        vault.pauseVault();
+
+        vm.prank(factoryAddr);
+        vault.unpauseVault();
+
+        vm.prank(market1);
+        vault.lockForMarket(alice, 1000e6);
+        assertEq(vault.marketBalance(market1), 1000e6);
+    }
+
+    /*//////////////////////////////////////////////////////////////
                         EDGE CASE TESTS
     //////////////////////////////////////////////////////////////*/
 

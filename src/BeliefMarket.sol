@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.20;
 
+import {ReentrancyGuard} from "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
 import {IBeliefVault} from "./interfaces/IBeliefVault.sol";
 import {IBeliefMarket} from "./interfaces/IBeliefMarket.sol";
 import {Side, Pool, Position, MarketParams, MarketState} from "./types/BeliefTypes.sol";
@@ -9,7 +10,7 @@ import {Side, Pool, Position, MarketParams, MarketState} from "./types/BeliefTyp
 /// @notice A market where users stake USDC to signal belief (support or oppose) on claims
 /// @dev Implements time-weighted signal mechanics where patience is rewarded over speed
 /// Uses EIP-1167 minimal proxy pattern for gas-efficient deployment
-contract BeliefMarket is IBeliefMarket {
+contract BeliefMarket is IBeliefMarket, ReentrancyGuard {
     /*//////////////////////////////////////////////////////////////
                                CONSTANTS
     //////////////////////////////////////////////////////////////*/
@@ -123,17 +124,17 @@ contract BeliefMarket is IBeliefMarket {
     //////////////////////////////////////////////////////////////*/
 
     /// @inheritdoc IBeliefMarket
-    function commitSupport(uint256 amount) external returns (uint256 positionId) {
+    function commitSupport(uint256 amount) external nonReentrant returns (uint256 positionId) {
         return _commit(Side.Support, amount);
     }
 
     /// @inheritdoc IBeliefMarket
-    function commitOppose(uint256 amount) external returns (uint256 positionId) {
+    function commitOppose(uint256 amount) external nonReentrant returns (uint256 positionId) {
         return _commit(Side.Oppose, amount);
     }
 
     /// @inheritdoc IBeliefMarket
-    function withdraw(uint256 positionId) external {
+    function withdraw(uint256 positionId) external nonReentrant {
         if (_positionOwners[positionId] == address(0)) revert PositionNotFound();
         if (_positionOwners[positionId] != msg.sender) revert NotPositionOwner();
 
@@ -185,7 +186,7 @@ contract BeliefMarket is IBeliefMarket {
     }
 
     /// @inheritdoc IBeliefMarket
-    function claimRewards(uint256 positionId) external returns (uint256 amount) {
+    function claimRewards(uint256 positionId) external nonReentrant returns (uint256 amount) {
         if (_positionOwners[positionId] == address(0)) revert PositionNotFound();
         if (_positionOwners[positionId] != msg.sender) revert NotPositionOwner();
 
