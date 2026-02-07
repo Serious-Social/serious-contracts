@@ -49,14 +49,16 @@ contract SeriousnessTokenTest is Test {
         vm.prank(address(market));
         srs.mint(alice, 100e18);
 
-        // Approve bob
-        vm.prank(alice);
-        srs.approve(bob, 100e18);
-
-        // TransferFrom should revert
+        // TransferFrom reverts — approve is blocked so allowance is always 0
         vm.prank(bob);
-        vm.expectRevert(ISeriousnessToken.TransferNotAllowed.selector);
+        vm.expectRevert();
         srs.transferFrom(alice, bob, 50e18);
+    }
+
+    function test_Approve_Reverts() public {
+        vm.prank(alice);
+        vm.expectRevert(ISeriousnessToken.TransferNotAllowed.selector);
+        srs.approve(bob, 100e18);
     }
 
     /*//////////////////////////////////////////////////////////////

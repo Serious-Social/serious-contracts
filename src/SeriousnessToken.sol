@@ -29,6 +29,11 @@ contract SeriousnessToken is ERC20, ISeriousnessToken {
         _burn(from, amount);
     }
 
+    /// @dev Override approve to revert — soulbound tokens cannot be approved for transfer
+    function approve(address, uint256) public pure override returns (bool) {
+        revert TransferNotAllowed();
+    }
+
     /// @dev Override _update to make the token soulbound (only mint and burn allowed)
     function _update(address from, address to, uint256 value) internal override {
         if (from != address(0) && to != address(0)) revert TransferNotAllowed();
