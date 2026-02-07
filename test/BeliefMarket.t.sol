@@ -1093,6 +1093,52 @@ contract BeliefMarketTest is Test {
                     UNALLOCATED SRP TESTS
     //////////////////////////////////////////////////////////////*/
 
+    function test_UnallocatedSrp_SoleStakerRecoversPremium() public {
+        // Author creates market — nobody else participates
+        uint256 commitment = 10_000e6;
+        _initializeMarketWithAuthor(commitment);
+
+        uint256 premium = (commitment * uint256(AUTHOR_PREMIUM_BPS)) / 10000;
+
+        // Premium is unallocated
+        assertEq(market.unallocatedSrp(), premium);
+
+        // Warp past lock period
+        vm.warp(block.timestamp + LOCK_PERIOD + 1);
+
+        uint256 balanceBefore = usdc.balanceOf(author);
+
+        // Author withdraws — flush should fire during auto-claim
+        vm.prank(author);
+        market.withdraw(1);
+
+        uint256 balanceAfter = usdc.balanceOf(author);
+        uint256 totalReceived = balanceAfter - balanceBefore;
+
+        // Author should get back principal + premium (minus rounding dust)
+        assertApproxEqAbs(totalReceived, commitment, 1, "Sole staker should recover full commitment including premium");
+        assertEq(market.unallocatedSrp(), 0, "Unallocated SRP should be flushed");
+        assertLe(market.srpBalance(), 1, "SRP should be empty (at most rounding dust)");
+    }
+
+    function test_UnallocatedSrp_FlushedOnClaimRewards() public {
+        // Author creates market, premium is unallocated
+        _initializeMarketWithAuthor(10_000e6);
+
+        uint256 premium = (10_000e6 * uint256(AUTHOR_PREMIUM_BPS)) / 10000;
+        assertEq(market.unallocatedSrp(), premium);
+
+        // Warp past min reward duration
+        vm.warp(block.timestamp + MIN_REWARD_DURATION + 1);
+
+        // Author claims rewards — should flush unallocated SRP first
+        vm.prank(author);
+        uint256 claimed = market.claimRewards(1);
+
+        assertGt(claimed, 0, "Author should receive rewards from flushed premium");
+        assertEq(market.unallocatedSrp(), 0, "Unallocated SRP should be flushed on claim");
+    }
+
     function test_UnallocatedSrp_AuthorPremiumDistributed() public {
         // Author creates market with initial commitment — premium goes to SRP
         // At that point totalWeight is 0, so funds should be tracked as unallocated

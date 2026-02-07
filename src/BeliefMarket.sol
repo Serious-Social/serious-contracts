@@ -391,6 +391,9 @@ contract BeliefMarket is IBeliefMarket, ReentrancyGuard {
             return 0;
         }
 
+        // Flush any unallocated SRP through accumulators before calculating rewards
+        _flushUnallocatedSrp();
+
         claimable = _calculatePendingRewards(positionId);
         if (claimable == 0) return 0;
 
@@ -431,6 +434,24 @@ contract BeliefMarket is IBeliefMarket, ReentrancyGuard {
         }
 
         emit SrpFunded(amount, source);
+    }
+
+    /// @notice Flush unallocated SRP through accumulators if weight exists
+    /// @dev Called during claims/withdrawals to ensure rewards from fees generated at
+    ///      zero-weight time (e.g. author premium) become claimable once weight builds up
+    function _flushUnallocatedSrp() internal {
+        if (unallocatedSrp == 0) return;
+
+        uint256 totalWeight = _getTotalWeight();
+        if (totalWeight == 0) return;
+
+        uint256 flushed = unallocatedSrp;
+        unallocatedSrp = 0;
+
+        rewardPerPrincipalTime += (flushed * block.timestamp * RAY) / totalWeight;
+        rewardPerPrincipalPerTime += (flushed * RAY) / totalWeight;
+
+        emit UnallocatedSrpFlushed(flushed);
     }
 
     /// @notice Calculate time-weighted signal for a side
