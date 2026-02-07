@@ -114,9 +114,8 @@ When a user stakes:
 Early withdrawal is **always allowed** — users are never trapped. If a user withdraws before `LOCK_PERIOD` expires:
 - A **penalty** (configurable, e.g. 15% of principal) is deducted
 - The penalty is routed to the SRP (only if remaining stakers exist to receive it)
-- All previously minted **reputation tokens** are burned (see §8a)
 - Pending USDC rewards are forfeited
-- If `earlyWithdrawPenaltyBps = 0`, the user exits with no penalty (but still forfeits rewards and reputation)
+- If `earlyWithdrawPenaltyBps = 0`, the user exits with no penalty (but still forfeits rewards)
 
 ### Purpose
 
@@ -228,36 +227,7 @@ Positions must wait at least `minRewardDuration` (e.g. 7 days) after deposit bef
 
 ---
 
-## 8a. Seriousness Reputation Token (SRS)
-
-A **non‑transferable (soulbound) ERC‑20** token that accrues proportionally to stake amount and duration.
-
-### Accrual
-
-```
-reputation = amount × elapsed_seconds × REPUTATION_SCALE / SECONDS_PER_DAY
-```
-
-Where `REPUTATION_SCALE = 1e12` bridges USDC's 6 decimals to SRS's 18 decimals. In human terms: **1 SRS per USD‑day staked**.
-
-### Minting
-
-- Reputation is minted lazily when a position claims USDC rewards or withdraws normally
-- Only accrues after `minRewardDuration` has elapsed
-
-### Burning
-
-- On **early withdrawal**, all previously minted SRS for that position is burned
-- This makes early exit costly in reputation, not just in USDC penalty
-
-### Properties
-
-- Soulbound: only mint and burn — no transfers between addresses
-- Only registered BeliefMarkets can mint / burn (enforced via the BeliefVault registry)
-
----
-
-## 8b. Optional Enhancement: Yield‑Bearing Escrow (Aave)
+## 8a. Optional Enhancement: Yield‑Bearing Escrow (Aave)
 
 **Idea:** While staked, committed USDC can be deposited into a conservative lending protocol (e.g., Aave) so that generated yield *automatically funds the Signal Reward Pool (SRP)*.
 
@@ -339,7 +309,6 @@ The factory owner can update default parameters for new markets via `setDefaultP
 
 - Principal is fully returned via the vault
 - Pending SRP rewards are auto‑claimed in the same transaction
-- Accrued reputation (SRS) is minted before release
 - The position's principal and weighted timestamp are removed from the pool, shifting the belief curve
 
 ### Early Withdrawal (before lock period)
@@ -347,7 +316,6 @@ The factory owner can update default parameters for new markets via `setDefaultP
 - Always allowed — users are never trapped
 - A penalty (e.g. 15%) is deducted from principal and routed to the SRP
 - All pending USDC rewards are forfeited
-- All previously minted SRS reputation is burned
 - Remaining principal is returned to the user
 
 In both cases, exits shift the belief curve — this is information, not punishment.
@@ -360,7 +328,6 @@ In both cases, exits shift the belief curve — this is information, not punishm
 
 - Deploys a single **BeliefMarket** implementation contract at construction
 - Deploys a single **BeliefVault** for centralized USDC custody
-- Deploys a single **SeriousnessToken** (SRS) for reputation
 - Creates new markets as **EIP‑1167 minimal proxy** clones for gas‑efficient deployment
 - Maps `postId → market address`
 - Holds default `MarketParams`; owner can update via `setDefaultParams`
@@ -371,7 +338,6 @@ In both cases, exits shift the belief curve — this is information, not punishm
 - Per‑market balance isolation prevents a compromised market from draining others
 - Only the factory can register new markets
 - Only registered markets can lock / release USDC
-- Also serves as the authority for SRS mint/burn permissions
 
 ### BeliefMarket (clone)
 
@@ -382,24 +348,15 @@ State:
 - Dual reward accumulators: `rewardPerPrincipalTime`, `rewardPerPrincipalPerTime`
 - Per‑position records (side, timestamps, amount, claimed rewards)
 - Per‑position reward accumulator snapshots
-- Per‑position reputation tracking
-
 Functions:
 - `commitSupport(amount)` / `commitOppose(amount)` — stake USDC to a side
 - `withdraw(positionId)` — withdraw principal (normal or early)
-- `claimRewards(positionId)` — claim pending SRP rewards + mint accrued SRS
+- `claimRewards(positionId)` — claim pending SRP rewards
 - `belief()` — view current belief curve value (0 to 1e18)
 - `getWeight(side)` — view time‑weighted signal for a side
 - `getMarketState()` — view full market snapshot
 - `pendingRewards(positionId)` — view claimable USDC rewards
-- `pendingReputation(positionId)` — view mintable SRS
 - `getCurrentEntryFeeBps()` — view current entry fee
-
-### SeriousnessToken (SRS)
-
-- Non‑transferable (soulbound) ERC‑20
-- Only registered markets can mint / burn
-- See §8a for accrual and burn mechanics
 
 ### Token
 
