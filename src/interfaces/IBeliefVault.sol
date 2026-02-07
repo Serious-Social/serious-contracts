@@ -41,6 +41,13 @@ interface IBeliefVault {
     /// @param market The market address to register
     function registerMarket(address market) external;
 
+    /// @notice Pause the vault (only callable by factory)
+    /// @dev When paused, lockForMarket reverts but releaseFromMarket still works
+    function pauseVault() external;
+
+    /// @notice Unpause the vault (only callable by factory)
+    function unpauseVault() external;
+
     /// @notice Pull USDC from a user into the vault for a market (only callable by registered markets)
     /// @param user The user to pull USDC from
     /// @param amount The amount to lock

@@ -4,13 +4,16 @@ pragma solidity ^0.8.20;
 import {Test, console} from "forge-std/Test.sol";
 import {BeliefMarket} from "../src/BeliefMarket.sol";
 import {BeliefVault} from "../src/BeliefVault.sol";
+import {SeriousnessToken} from "../src/SeriousnessToken.sol";
 import {IBeliefMarket} from "../src/interfaces/IBeliefMarket.sol";
+import {ISeriousnessToken} from "../src/interfaces/ISeriousnessToken.sol";
 import {Side, Position, MarketParams, MarketState} from "../src/types/BeliefTypes.sol";
 import {MockUSDC} from "../src/mock/MockUSDC.sol";
 
 contract BeliefMarketTest is Test {
     BeliefMarket public market;
     BeliefVault public vault;
+    SeriousnessToken public srs;
     MockUSDC public usdc;
 
     address public alice = makeAddr("alice");
@@ -37,6 +40,9 @@ contract BeliefMarketTest is Test {
 
         // Deploy vault (this test contract acts as factory)
         vault = new BeliefVault(address(this), address(usdc));
+
+        // Deploy reputation token
+        srs = new SeriousnessToken(address(vault));
 
         // Register market with vault
         vault.registerMarket(address(market));
@@ -74,12 +80,12 @@ contract BeliefMarketTest is Test {
     }
 
     function _initializeMarket() internal {
-        market.initialize(POST_ID, address(vault), _defaultParams(), address(0), 0);
+        market.initialize(POST_ID, address(vault), _defaultParams(), address(0), 0, address(srs));
     }
 
     function _initializeMarketWithAuthor(uint256 authorCommitment) internal {
         // Vault pulls USDC from author during initialize (no pre-transfer needed)
-        market.initialize(POST_ID, address(vault), _defaultParams(), author, authorCommitment);
+        market.initialize(POST_ID, address(vault), _defaultParams(), author, authorCommitment, address(srs));
     }
 
     /*//////////////////////////////////////////////////////////////
@@ -120,7 +126,7 @@ contract BeliefMarketTest is Test {
         _initializeMarket();
 
         vm.expectRevert("Already initialized");
-        market.initialize(POST_ID, address(vault), _defaultParams(), address(0), 0);
+        market.initialize(POST_ID, address(vault), _defaultParams(), address(0), 0, address(srs));
     }
 
     /*//////////////////////////////////////////////////////////////
@@ -935,19 +941,24 @@ contract BeliefMarketTest is Test {
         assertEq(balanceAfter - balanceBefore, amount, "Normal withdraw should return full principal");
     }
 
-    function test_EarlyWithdraw_RevertsIfDisabled() public {
-        // Use params with earlyWithdrawPenaltyBps = 0
+    function test_EarlyWithdraw_ZeroPenalty() public {
+        // Use params with earlyWithdrawPenaltyBps = 0 — should still allow early exit, just no penalty
         MarketParams memory customParams = _defaultParams();
         customParams.earlyWithdrawPenaltyBps = 0;
 
-        market.initialize(POST_ID, address(vault), customParams, address(0), 0);
+        market.initialize(POST_ID, address(vault), customParams, address(0), 0, address(srs));
+
+        uint256 amount = 1000e6;
+        vm.prank(alice);
+        uint256 positionId = market.commitSupport(amount);
+
+        uint256 balanceBefore = usdc.balanceOf(alice);
 
         vm.prank(alice);
-        uint256 positionId = market.commitSupport(1000e6);
-
-        vm.prank(alice);
-        vm.expectRevert(IBeliefMarket.EarlyWithdrawDisabled.selector);
         market.withdraw(positionId);
+
+        uint256 balanceAfter = usdc.balanceOf(alice);
+        assertEq(balanceAfter - balanceBefore, amount, "Should return full principal with 0% penalty");
     }
 
     function test_EarlyWithdraw_RevertsIfAlreadyWithdrawn() public {
@@ -1082,6 +1093,342 @@ contract BeliefMarketTest is Test {
         vm.prank(bob);
         uint256 newPos = market.commitSupport(500e6);
         assertGt(newPos, 0);
+    }
+
+    /*//////////////////////////////////////////////////////////////
+                        REPUTATION TESTS
+    //////////////////////////////////////////////////////////////*/
+
+    function test_Reputation_MintedOnClaimRewards() public {
+        _initializeMarketWithAuthor(10_000e6);
+
+        // Warp so author's position builds weight
+        vm.warp(block.timestamp + 1 days);
+
+        // Alice stakes (pays late entry fee to SRP)
+        vm.prank(alice);
+        market.commitSupport(10_000e6);
+
+        // Warp past min reward duration
+        vm.warp(block.timestamp + MIN_REWARD_DURATION + 1);
+
+        // Author claims rewards — should also mint reputation
+        uint256 srsBefore = srs.balanceOf(author);
+        assertEq(srsBefore, 0);
+
+        vm.prank(author);
+        market.claimRewards(1);
+
+        uint256 srsAfter = srs.balanceOf(author);
+        assertGt(srsAfter, 0, "Author should have earned reputation");
+    }
+
+    function test_Reputation_MintedOnNormalWithdraw() public {
+        _initializeMarket();
+
+        uint256 amount = 1000e6;
+        vm.prank(alice);
+        uint256 positionId = market.commitSupport(amount);
+
+        // Bob stakes to generate SRP fees
+        vm.warp(block.timestamp + 1 days);
+        vm.prank(bob);
+        market.commitSupport(1000e6);
+
+        // Warp past lock period (which is also past minRewardDuration)
+        vm.warp(block.timestamp + LOCK_PERIOD + 1);
+
+        uint256 srsBefore = srs.balanceOf(alice);
+
+        vm.prank(alice);
+        market.withdraw(positionId);
+
+        uint256 srsAfter = srs.balanceOf(alice);
+        assertGt(srsAfter, srsBefore, "Reputation should be minted on normal withdrawal");
+    }
+
+    function test_Reputation_BurnedOnEarlyWithdraw() public {
+        _initializeMarket();
+
+        // Alice stakes first
+        vm.prank(alice);
+        uint256 alicePos = market.commitSupport(10_000e6);
+
+        // Bob stakes to build pool
+        vm.warp(block.timestamp + 1 days);
+        vm.prank(bob);
+        market.commitSupport(10_000e6);
+
+        // Warp past minRewardDuration so Alice can claim
+        vm.warp(block.timestamp + MIN_REWARD_DURATION + 1);
+
+        // Alice claims rewards (mints reputation)
+        vm.prank(alice);
+        market.claimRewards(alicePos);
+
+        uint256 srsAfterClaim = srs.balanceOf(alice);
+        assertGt(srsAfterClaim, 0, "Alice should have reputation after claim");
+
+        // Alice early-withdraws — reputation should be burned
+        vm.prank(alice);
+        market.withdraw(alicePos);
+
+        uint256 srsAfterWithdraw = srs.balanceOf(alice);
+        assertEq(srsAfterWithdraw, 0, "Reputation should be burned on early withdrawal");
+    }
+
+    function test_Reputation_NotMintedBeforeMinRewardDuration() public {
+        _initializeMarket();
+
+        vm.prank(alice);
+        uint256 positionId = market.commitSupport(1000e6);
+
+        // Warp but NOT past minRewardDuration
+        vm.warp(block.timestamp + MIN_REWARD_DURATION - 1);
+
+        uint256 pending = market.pendingReputation(positionId);
+        assertEq(pending, 0, "No reputation before minRewardDuration");
+    }
+
+    function test_Reputation_NoDuplicateMinting() public {
+        _initializeMarketWithAuthor(10_000e6);
+
+        vm.warp(block.timestamp + 1 days);
+
+        vm.prank(alice);
+        market.commitSupport(10_000e6);
+
+        // Warp to day 10 and claim
+        vm.warp(block.timestamp + 10 days);
+
+        vm.prank(author);
+        market.claimRewards(1);
+
+        uint256 srsAtDay10 = srs.balanceOf(author);
+
+        // Warp to day 30 and withdraw
+        vm.warp(block.timestamp + LOCK_PERIOD);
+
+        vm.prank(author);
+        market.withdraw(1);
+
+        uint256 srsAtDay30 = srs.balanceOf(author);
+
+        // Should have more than at day 10 (covering [10, 30+] interval)
+        assertGt(srsAtDay30, srsAtDay10, "Should mint additional reputation on withdraw");
+    }
+
+    function test_Reputation_AccrualFormula() public {
+        _initializeMarket();
+
+        uint256 amount = 100e6; // $100 USDC
+        vm.prank(alice);
+        uint256 positionId = market.commitSupport(amount);
+
+        // Warp 30 days (past minRewardDuration)
+        vm.warp(block.timestamp + 30 days);
+
+        // Expected: $100 * 30 days = 3000 SRS (18 decimals)
+        // = 100e6 * 30 * 86400 * 1e12 / 86400 = 100e6 * 30 * 1e12 = 3000e18
+        uint256 pending = market.pendingReputation(positionId);
+        assertEq(pending, 3000e18, "Should be 3000 SRS for $100 staked 30 days");
+    }
+
+    function test_Reputation_PendingReputationView() public {
+        _initializeMarket();
+
+        uint256 amount = 1000e6; // $1000 USDC
+        vm.prank(alice);
+        uint256 positionId = market.commitSupport(amount);
+
+        // Warp past minRewardDuration
+        vm.warp(block.timestamp + 30 days);
+
+        // $1000 * 30 days = 30000 SRS
+        uint256 pending = market.pendingReputation(positionId);
+        assertEq(pending, 30_000e18, "Should be 30,000 SRS for $1000 staked 30 days");
+    }
+
+    function test_Reputation_AuthorInitialCommitmentEarns() public {
+        _initializeMarketWithAuthor(10_000e6);
+
+        // Author's net amount after 2% premium
+        uint256 premium = (10_000e6 * uint256(AUTHOR_PREMIUM_BPS)) / 10000;
+        uint256 netAmount = 10_000e6 - premium;
+
+        // Warp past minRewardDuration + lock
+        vm.warp(block.timestamp + LOCK_PERIOD + 1);
+
+        // Author withdraws (auto-claims, which mints reputation)
+        vm.prank(author);
+        market.withdraw(1);
+
+        uint256 authorSrs = srs.balanceOf(author);
+        assertGt(authorSrs, 0, "Author should earn reputation from initial commitment");
+
+        // Expected: netAmount * (LOCK_PERIOD + 1) * 1e12 / 86400
+        uint256 duration = LOCK_PERIOD + 1;
+        uint256 expected = (netAmount * duration * 1e12) / 86_400;
+        assertEq(authorSrs, expected, "Author reputation should match formula");
+    }
+
+    function test_Reputation_MultiplePositionsIndependent() public {
+        _initializeMarket();
+
+        vm.startPrank(alice);
+        uint256 pos1 = market.commitSupport(1000e6);
+        uint256 pos2 = market.commitOppose(500e6);
+        vm.stopPrank();
+
+        // Warp past minRewardDuration + lock
+        vm.warp(block.timestamp + LOCK_PERIOD + 1);
+
+        // Withdraw both — reputation from each should be independent
+        vm.startPrank(alice);
+        market.withdraw(pos1);
+        uint256 srsAfterFirst = srs.balanceOf(alice);
+
+        market.withdraw(pos2);
+        uint256 srsAfterSecond = srs.balanceOf(alice);
+        vm.stopPrank();
+
+        assertGt(srsAfterSecond, srsAfterFirst, "Second position should add more reputation");
+    }
+
+    function test_Reputation_NoMintOnEarlyWithdrawWithoutPriorClaim() public {
+        _initializeMarket();
+
+        vm.prank(alice);
+        uint256 positionId = market.commitSupport(1000e6);
+
+        // Bob stakes
+        vm.prank(bob);
+        market.commitSupport(1000e6);
+
+        // Warp past minRewardDuration but before lock period
+        vm.warp(block.timestamp + MIN_REWARD_DURATION + 1);
+
+        // Alice early-withdraws without claiming first — no reputation should be minted or burned
+        vm.prank(alice);
+        market.withdraw(positionId);
+
+        uint256 aliceSrs = srs.balanceOf(alice);
+        assertEq(aliceSrs, 0, "No reputation should remain after early withdrawal");
+    }
+
+    function test_Reputation_DisabledWhenTokenIsZero() public {
+        // Initialize without reputation token
+        market.initialize(POST_ID, address(vault), _defaultParams(), address(0), 0, address(0));
+
+        vm.prank(alice);
+        uint256 positionId = market.commitSupport(1000e6);
+
+        vm.warp(block.timestamp + LOCK_PERIOD + 1);
+
+        uint256 pending = market.pendingReputation(positionId);
+        assertEq(pending, 0, "No pending reputation when token is disabled");
+
+        // Withdraw should work fine without reputation
+        vm.prank(alice);
+        market.withdraw(positionId);
+    }
+
+    /*//////////////////////////////////////////////////////////////
+                    UNALLOCATED SRP TESTS
+    //////////////////////////////////////////////////////////////*/
+
+    function test_UnallocatedSrp_AuthorPremiumDistributed() public {
+        // Author creates market with initial commitment — premium goes to SRP
+        // At that point totalWeight is 0, so funds should be tracked as unallocated
+        _initializeMarketWithAuthor(10_000e6);
+
+        uint256 premium = (10_000e6 * uint256(AUTHOR_PREMIUM_BPS)) / 10000;
+
+        // Premium should be in srpBalance but marked as unallocated
+        assertEq(market.srpBalance(), premium, "SRP should hold author premium");
+        assertEq(market.unallocatedSrp(), premium, "Premium should be unallocated (no weight at deposit)");
+
+        // Accumulators should still be zero (nothing distributed yet)
+        assertEq(market.rewardPerPrincipalTime(), 0);
+        assertEq(market.rewardPerPrincipalPerTime(), 0);
+
+        // Wait so author builds weight
+        vm.warp(block.timestamp + 1 days);
+
+        // Alice stakes — pays late entry fee which triggers _addToSrp with totalWeight > 0
+        // This should flush the unallocated author premium through the accumulators
+        vm.prank(alice);
+        market.commitSupport(10_000e6);
+
+        assertEq(market.unallocatedSrp(), 0, "Unallocated SRP should be flushed");
+        assertGt(market.rewardPerPrincipalTime(), 0, "Accumulators should be updated");
+        assertGt(market.rewardPerPrincipalPerTime(), 0, "Accumulators should be updated");
+
+        // Wait past min reward duration
+        vm.warp(block.timestamp + MIN_REWARD_DURATION + 1);
+
+        // Author should have claimable rewards from the premium + Alice's entry fee
+        uint256 authorPending = market.pendingRewards(1);
+        assertGt(authorPending, 0, "Author should have claimable rewards from flushed premium");
+
+        // Author can actually claim them
+        uint256 balanceBefore = usdc.balanceOf(author);
+        vm.prank(author);
+        market.claimRewards(1);
+        uint256 balanceAfter = usdc.balanceOf(author);
+        assertEq(balanceAfter - balanceBefore, authorPending);
+    }
+
+    function test_UnallocatedSrp_NoStuckFundsAfterFullWithdraw() public {
+        // Author creates market — premium is unallocated
+        _initializeMarketWithAuthor(10_000e6);
+
+        // Alice stakes (triggers flush of unallocated SRP)
+        vm.warp(block.timestamp + 1 days);
+        vm.prank(alice);
+        uint256 alicePos = market.commitSupport(10_000e6);
+
+        // Wait past lock for both
+        vm.warp(block.timestamp + LOCK_PERIOD + 1);
+
+        // Both withdraw (auto-claiming rewards)
+        vm.prank(author);
+        market.withdraw(1);
+        vm.prank(alice);
+        market.withdraw(alicePos);
+
+        // SRP should be nearly empty — only rounding dust
+        uint256 srpRemaining = market.srpBalance();
+        assertLe(srpRemaining, 2, "SRP should have at most rounding dust after full withdrawal");
+        assertEq(market.unallocatedSrp(), 0, "No unallocated SRP should remain");
+    }
+
+    function test_UnallocatedSrp_MultipleZeroWeightDeposits() public {
+        // Initialize without author so we can control timing
+        _initializeMarket();
+
+        // First staker — no fee, no SRP, weight starts at 0
+        vm.prank(alice);
+        market.commitSupport(1000e6);
+
+        // Second staker in same block — weight is still 0 for alice (deposited this block)
+        // Entry fee goes to SRP but totalWeight is 0
+        vm.prank(bob);
+        market.commitOppose(1000e6);
+
+        // The entry fee from Bob should be unallocated
+        uint256 unalloc = market.unallocatedSrp();
+        assertGt(unalloc, 0, "Entry fee should be unallocated when totalWeight is 0");
+
+        // Warp so weight builds
+        vm.warp(block.timestamp + 1 days);
+
+        // Charlie stakes — triggers flush
+        vm.prank(charlie);
+        market.commitSupport(1000e6);
+
+        assertEq(market.unallocatedSrp(), 0, "Unallocated SRP should be flushed after weight exists");
+        assertGt(market.rewardPerPrincipalTime(), 0, "Accumulators should reflect flushed funds");
     }
 
     function test_EarlyWithdraw_EmitsEvent() public {
