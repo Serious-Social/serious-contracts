@@ -941,19 +941,24 @@ contract BeliefMarketTest is Test {
         assertEq(balanceAfter - balanceBefore, amount, "Normal withdraw should return full principal");
     }
 
-    function test_EarlyWithdraw_RevertsIfDisabled() public {
-        // Use params with earlyWithdrawPenaltyBps = 0
+    function test_EarlyWithdraw_ZeroPenalty() public {
+        // Use params with earlyWithdrawPenaltyBps = 0 — should still allow early exit, just no penalty
         MarketParams memory customParams = _defaultParams();
         customParams.earlyWithdrawPenaltyBps = 0;
 
         market.initialize(POST_ID, address(vault), customParams, address(0), 0, address(srs));
 
+        uint256 amount = 1000e6;
         vm.prank(alice);
-        uint256 positionId = market.commitSupport(1000e6);
+        uint256 positionId = market.commitSupport(amount);
+
+        uint256 balanceBefore = usdc.balanceOf(alice);
 
         vm.prank(alice);
-        vm.expectRevert(IBeliefMarket.EarlyWithdrawDisabled.selector);
         market.withdraw(positionId);
+
+        uint256 balanceAfter = usdc.balanceOf(alice);
+        assertEq(balanceAfter - balanceBefore, amount, "Should return full principal with 0% penalty");
     }
 
     function test_EarlyWithdraw_RevertsIfAlreadyWithdrawn() public {

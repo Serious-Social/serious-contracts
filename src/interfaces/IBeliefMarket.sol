@@ -82,9 +82,6 @@ interface IBeliefMarket {
     /// @notice Thrown when stake amount is outside allowed range
     error StakeOutOfRange();
 
-    /// @notice Thrown when early withdrawal is disabled (earlyWithdrawPenaltyBps == 0)
-    error EarlyWithdrawDisabled();
-
     /*//////////////////////////////////////////////////////////////
                             WRITE FUNCTIONS
     //////////////////////////////////////////////////////////////*/

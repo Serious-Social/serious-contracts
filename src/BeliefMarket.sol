@@ -185,8 +185,6 @@ contract BeliefMarket is IBeliefMarket {
             }
         } else {
             // EARLY WITHDRAWAL: lock period has NOT expired
-            if (params.earlyWithdrawPenaltyBps == 0) revert EarlyWithdrawDisabled();
-
             // Mark withdrawn (forfeits pending rewards — _calculatePendingRewards returns 0)
             pos.withdrawn = true;
 
