@@ -111,12 +111,12 @@ When a user stakes:
 
 ### Early Withdrawal
 
-If a user withdraws before `LOCK_PERIOD` expires:
-- A **penalty** (configurable, e.g. 5% of principal) is deducted
+Early withdrawal is **always allowed** — users are never trapped. If a user withdraws before `LOCK_PERIOD` expires:
+- A **penalty** (configurable, e.g. 15% of principal) is deducted
 - The penalty is routed to the SRP (only if remaining stakers exist to receive it)
 - All previously minted **reputation tokens** are burned (see §8a)
 - Pending USDC rewards are forfeited
-- Set `earlyWithdrawPenaltyBps = 0` to disable early withdrawal entirely
+- If `earlyWithdrawPenaltyBps = 0`, the user exits with no penalty (but still forfeits rewards and reputation)
 
 ### Purpose
 
@@ -316,7 +316,7 @@ Each market is created with a `MarketParams` struct:
 | `lateEntryFeeMaxBps` | Maximum entry fee (bps) | 750 (7.5%) |
 | `lateEntryFeeScale` | Principal amount that adds 1 bps | $1,000 USDC |
 | `authorPremiumBps` | Author challenge premium (bps) | 1000 (10%) |
-| `earlyWithdrawPenaltyBps` | Early withdrawal penalty (bps); 0 = disabled | 1500 (15%) |
+| `earlyWithdrawPenaltyBps` | Early withdrawal penalty (bps); 0 = no penalty | 1500 (15%) |
 | `yieldBearingEscrow` | Enable Aave yield integration | false |
 | `minStake` | Minimum stake amount | $5 USDC |
 | `maxStake` | Maximum stake amount | $1,000 USDC |
@@ -344,11 +344,11 @@ The factory owner can update default parameters for new markets via `setDefaultP
 
 ### Early Withdrawal (before lock period)
 
+- Always allowed — users are never trapped
 - A penalty (e.g. 15%) is deducted from principal and routed to the SRP
 - All pending USDC rewards are forfeited
 - All previously minted SRS reputation is burned
 - Remaining principal is returned to the user
-- Disabled when `earlyWithdrawPenaltyBps = 0`
 
 In both cases, exits shift the belief curve — this is information, not punishment.
 
