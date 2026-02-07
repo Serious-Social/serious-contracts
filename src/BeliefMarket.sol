@@ -421,6 +421,7 @@ contract BeliefMarket is IBeliefMarket, ReentrancyGuard {
         if (totalWeight > 0) {
             uint256 distributable = amount + unallocatedSrp;
             if (unallocatedSrp > 0) {
+                emit UnallocatedSrpFlushed(unallocatedSrp);
                 unallocatedSrp = 0;
             }
             rewardPerPrincipalTime += (distributable * block.timestamp * RAY) / totalWeight;

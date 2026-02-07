@@ -2,12 +2,11 @@
 pragma solidity ^0.8.20;
 
 import {Script, console} from "forge-std/Script.sol";
-import {MockUSDC} from "../src/mock/MockUSDC.sol";
 import {BeliefFactory} from "../src/BeliefFactory.sol";
 import {MarketParams} from "../src/types/BeliefTypes.sol";
 
-/// @notice Deploy MockUSDC and BeliefFactory to Base Sepolia
-contract DeployBaseSepolia is Script {
+/// @notice Deploy BeliefFactory to Base mainnet
+contract DeployBase is Script {
     function run() external {
         uint256 deployerPrivateKey = vm.envUint("PRIVATE_KEY");
         address deployer = vm.addr(deployerPrivateKey);

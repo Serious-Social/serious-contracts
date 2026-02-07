@@ -45,6 +45,10 @@ interface IBeliefMarket {
     /// @param source Description of fee source (e.g., "late_entry", "author_premium")
     event SrpFunded(uint256 amount, string source);
 
+    /// @notice Emitted when previously unallocated SRP funds are flushed through accumulators
+    /// @param amount Amount of previously unallocated SRP now distributed
+    event UnallocatedSrpFlushed(uint256 amount);
+
     /*//////////////////////////////////////////////////////////////
                                  ERRORS
     //////////////////////////////////////////////////////////////*/
