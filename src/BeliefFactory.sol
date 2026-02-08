@@ -8,7 +8,7 @@ import {IBeliefFactory} from "./interfaces/IBeliefFactory.sol";
 import {IBeliefVault} from "./interfaces/IBeliefVault.sol";
 import {BeliefMarket} from "./BeliefMarket.sol";
 import {BeliefVault} from "./BeliefVault.sol";
-import {MarketParams} from "./types/BeliefTypes.sol";
+import {Side, MarketParams} from "./types/BeliefTypes.sol";
 
 /// @title BeliefFactory
 /// @notice Factory for creating BeliefMarket instances using minimal proxies
@@ -62,8 +62,12 @@ contract BeliefFactory is IBeliefFactory, Ownable, Pausable {
     //////////////////////////////////////////////////////////////*/
 
     /// @inheritdoc IBeliefFactory
-    function createMarket(bytes32 postId, uint256 initialCommitment) external whenNotPaused returns (address market) {
-        return _createMarket(postId, initialCommitment);
+    function createMarket(bytes32 postId, uint256 initialCommitment, Side initialSide)
+        external
+        whenNotPaused
+        returns (address market)
+    {
+        return _createMarket(postId, initialCommitment, initialSide);
     }
 
     /// @inheritdoc IBeliefFactory
@@ -134,7 +138,7 @@ contract BeliefFactory is IBeliefFactory, Ownable, Pausable {
         // BPS fields must not exceed 100%
         if (p.lateEntryFeeBaseBps > 10_000) revert InvalidParams();
         if (p.lateEntryFeeMaxBps > 10_000) revert InvalidParams();
-        if (p.authorPremiumBps > 10_000) revert InvalidParams();
+        if (p.creatorPremiumBps > 10_000) revert InvalidParams();
         if (p.earlyWithdrawPenaltyBps > 10_000) revert InvalidParams();
 
         // Late entry fee ordering
@@ -156,7 +160,10 @@ contract BeliefFactory is IBeliefFactory, Ownable, Pausable {
     }
 
     /// @notice Internal function to create and initialize a market
-    function _createMarket(bytes32 postId, uint256 initialCommitment) internal returns (address market) {
+    function _createMarket(bytes32 postId, uint256 initialCommitment, Side initialSide)
+        internal
+        returns (address market)
+    {
         if (_markets[postId] != address(0)) revert MarketAlreadyExists();
 
         // Deploy minimal proxy
@@ -169,8 +176,9 @@ contract BeliefFactory is IBeliefFactory, Ownable, Pausable {
         _markets[postId] = market;
         _marketCount++;
 
-        // Initialize the market (vault pulls USDC from author during init if needed)
-        BeliefMarket(market).initialize(postId, address(vault), _defaultParams, msg.sender, initialCommitment);
+        // Initialize the market (vault pulls USDC from creator during init if needed)
+        BeliefMarket(market)
+            .initialize(postId, address(vault), _defaultParams, msg.sender, initialCommitment, initialSide);
 
         emit MarketCreated(postId, market, msg.sender);
     }

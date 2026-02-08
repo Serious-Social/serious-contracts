@@ -93,14 +93,16 @@ contract BeliefMarket is IBeliefMarket, ReentrancyGuard {
     /// @param postId_ The post ID this market tracks
     /// @param vault_ The vault address that holds USDC
     /// @param params_ Market configuration parameters
-    /// @param author_ The post author (for initial commitment)
-    /// @param initialCommitment_ Author's initial stake amount (0 if none)
+    /// @param creator_ The market creator (for initial commitment)
+    /// @param initialCommitment_ Creator's initial stake amount (0 if none)
+    /// @param initialSide_ The side the creator commits to (Support or Oppose)
     function initialize(
         bytes32 postId_,
         address vault_,
         MarketParams calldata params_,
-        address author_,
-        uint256 initialCommitment_
+        address creator_,
+        uint256 initialCommitment_,
+        Side initialSide_
     ) external {
         require(!_initialized, "Already initialized");
         _initialized = true;
@@ -113,9 +115,9 @@ contract BeliefMarket is IBeliefMarket, ReentrancyGuard {
         // Start position IDs at 1 (0 indicates non-existent)
         _nextPositionId = 1;
 
-        // Handle author's initial commitment if provided
-        if (initialCommitment_ > 0 && author_ != address(0)) {
-            _commitAsAuthor(author_, initialCommitment_);
+        // Handle creator's initial commitment if provided
+        if (initialCommitment_ > 0 && creator_ != address(0)) {
+            _commitAsCreator(creator_, initialCommitment_, initialSide_);
         }
     }
 
@@ -340,21 +342,22 @@ contract BeliefMarket is IBeliefMarket, ReentrancyGuard {
         emit Committed(positionId, msg.sender, side, netAmount, unlockTime);
     }
 
-    /// @notice Handle author's initial commitment (no late entry fee)
-    /// @dev Vault pulls USDC directly from the author
-    function _commitAsAuthor(address author, uint256 amount) internal {
+    /// @notice Handle creator's initial commitment (no late entry fee)
+    /// @dev Vault pulls USDC directly from the creator
+    function _commitAsCreator(address creator, uint256 amount, Side side) internal {
         if (amount < params.minStake || amount > params.maxStake) revert StakeOutOfRange();
-        // Lock USDC from author via vault
-        vault.lockForMarket(author, amount);
+        // Lock USDC from creator via vault
+        vault.lockForMarket(creator, amount);
 
-        // Author pays premium to SRP
-        uint256 premium = (amount * params.authorPremiumBps) / BPS;
-        _addToSrp(premium, "author_premium");
+        // Creator pays premium to SRP
+        uint256 premium = (amount * params.creatorPremiumBps) / BPS;
+        _addToSrp(premium, "creator_premium");
         uint256 netAmount = amount - premium;
 
-        // Update support pool
-        supportPool.principal += netAmount;
-        supportPool.weightedTimestampSum += netAmount * block.timestamp;
+        // Update selected pool
+        Pool storage pool = side == Side.Support ? supportPool : opposePool;
+        pool.principal += netAmount;
+        pool.weightedTimestampSum += netAmount * block.timestamp;
 
         // Create position
         uint256 positionId = _nextPositionId++;
@@ -362,7 +365,7 @@ contract BeliefMarket is IBeliefMarket, ReentrancyGuard {
         uint48 unlockTime = depositTime + params.lockPeriod;
 
         _positions[positionId] = Position({
-            side: Side.Support,
+            side: side,
             withdrawn: false,
             depositTimestamp: depositTime,
             unlockTimestamp: unlockTime,
@@ -370,14 +373,14 @@ contract BeliefMarket is IBeliefMarket, ReentrancyGuard {
             claimedRewards: 0
         });
 
-        _positionOwners[positionId] = author;
-        _userPositions[author].push(positionId);
+        _positionOwners[positionId] = creator;
+        _userPositions[creator].push(positionId);
 
         // Snapshot reward accumulators for O(1) reward calculation
         positionRewardPerPrincipalTimePaid[positionId] = rewardPerPrincipalTime;
         positionRewardPerPrincipalPerTimePaid[positionId] = rewardPerPrincipalPerTime;
 
-        emit Committed(positionId, author, Side.Support, netAmount, unlockTime);
+        emit Committed(positionId, creator, side, netAmount, unlockTime);
     }
 
     /// @notice Internal claim logic used by both claimRewards() and withdraw()
@@ -438,7 +441,7 @@ contract BeliefMarket is IBeliefMarket, ReentrancyGuard {
 
     /// @notice Flush unallocated SRP through accumulators if weight exists
     /// @dev Called during claims/withdrawals to ensure rewards from fees generated at
-    ///      zero-weight time (e.g. author premium) become claimable once weight builds up
+    ///      zero-weight time (e.g. creator premium) become claimable once weight builds up
     function _flushUnallocatedSrp() internal {
         if (unallocatedSrp == 0) return;
 

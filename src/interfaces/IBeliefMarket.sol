@@ -42,7 +42,7 @@ interface IBeliefMarket {
 
     /// @notice Emitted when fees are added to the Signal Reward Pool
     /// @param amount Amount added to SRP
-    /// @param source Description of fee source (e.g., "late_entry", "author_premium")
+    /// @param source Description of fee source (e.g., "late_entry", "creator_premium")
     event SrpFunded(uint256 amount, string source);
 
     /// @notice Emitted when previously unallocated SRP funds are flushed through accumulators

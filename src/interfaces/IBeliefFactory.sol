@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.20;
 
-import {MarketParams} from "../types/BeliefTypes.sol";
+import {Side, MarketParams} from "../types/BeliefTypes.sol";
 
 /// @title IBeliefFactory
 /// @notice Factory interface for creating and managing BeliefMarket instances
@@ -14,8 +14,8 @@ interface IBeliefFactory {
     /// @notice Emitted when a new belief market is created
     /// @param postId Unique identifier for the post/claim
     /// @param market Address of the deployed BeliefMarket
-    /// @param author Address of the post author
-    event MarketCreated(bytes32 indexed postId, address indexed market, address indexed author);
+    /// @param creator Address of the market creator
+    event MarketCreated(bytes32 indexed postId, address indexed market, address indexed creator);
 
     /// @notice Emitted when default market parameters are updated
     /// @param params New default parameters
@@ -40,10 +40,11 @@ interface IBeliefFactory {
 
     /// @notice Create a new belief market for a post
     /// @param postId Unique identifier for the post/claim
-    /// @param initialCommitment Author's initial commitment amount (subject to author premium)
+    /// @param initialCommitment Creator's initial commitment amount (subject to creator premium)
+    /// @param initialSide The side the creator commits to (Support or Oppose)
     /// @return market Address of the deployed BeliefMarket
-    /// @dev Author premium is deducted and sent to SRP
-    function createMarket(bytes32 postId, uint256 initialCommitment) external returns (address market);
+    /// @dev Creator premium is deducted and sent to SRP
+    function createMarket(bytes32 postId, uint256 initialCommitment, Side initialSide) external returns (address market);
 
     /// @notice Pause the factory (no new markets can be created)
     /// @dev Only callable by owner

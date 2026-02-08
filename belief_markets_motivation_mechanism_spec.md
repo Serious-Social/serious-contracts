@@ -161,8 +161,8 @@ Interpretation:
 
 Three fee sources fund the SRP in v0:
 
-1. **Author Challenge Premium**
-   - Small % (e.g. 1–3%) of author's initial commit
+1. **Creator Challenge Premium**
+   - Small % (e.g. 1–3%) of creator's initial commit
    - Signals willingness to be challenged
 
 2. **Entry Fee (Sliding Scale)**
@@ -234,7 +234,7 @@ Positions must wait at least `minRewardDuration` (e.g. 7 days) after deposit bef
 **Rationale:**
 - Reduces opportunity cost of long‑term commitment
 - Makes rewards endogenous to time and scale of commitment
-- Decreases reliance on author challenge premiums alone
+- Decreases reliance on creator challenge premiums alone
 - Preserves non‑zero‑sum economics (principal is never at risk)
 
 **Mechanism:**
@@ -285,7 +285,7 @@ Each market is created with a `MarketParams` struct:
 | `lateEntryFeeBaseBps` | Base entry fee (bps) | 100 (1%) |
 | `lateEntryFeeMaxBps` | Maximum entry fee (bps) | 750 (7.5%) |
 | `lateEntryFeeScale` | Principal amount that adds 1 bps | $1,000 USDC |
-| `authorPremiumBps` | Author challenge premium (bps) | 1000 (10%) |
+| `creatorPremiumBps` | Creator challenge premium (bps) | 1000 (10%) |
 | `earlyWithdrawPenaltyBps` | Early withdrawal penalty (bps); 0 = no penalty | 1500 (15%) |
 | `yieldBearingEscrow` | Enable Aave yield integration | false |
 | `minStake` | Minimum stake amount | $5 USDC |
@@ -380,7 +380,7 @@ This is **infrastructure for serious belief coordination**.
 
 - Binary belief only (SUPPORT / OPPOSE)
 - One market per post
-- No author revenue (author pays premium like everyone else)
+- No creator revenue (creator pays premium like everyone else)
 - No governance
 - No composability promises
 - Yield‑bearing escrow disabled by default

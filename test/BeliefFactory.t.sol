@@ -26,7 +26,7 @@ contract BeliefFactoryTest is Test {
     uint16 constant LATE_ENTRY_FEE_BASE_BPS = 50;
     uint16 constant LATE_ENTRY_FEE_MAX_BPS = 500;
     uint64 constant LATE_ENTRY_FEE_SCALE = 1000e6;
-    uint16 constant AUTHOR_PREMIUM_BPS = 200;
+    uint16 constant CREATOR_PREMIUM_BPS = 200;
     uint16 constant EARLY_WITHDRAW_PENALTY_BPS = 500;
     uint64 constant MIN_STAKE = 5e6;
     uint64 constant MAX_STAKE = 100_000e6;
@@ -56,7 +56,7 @@ contract BeliefFactoryTest is Test {
             lateEntryFeeBaseBps: LATE_ENTRY_FEE_BASE_BPS,
             lateEntryFeeMaxBps: LATE_ENTRY_FEE_MAX_BPS,
             lateEntryFeeScale: LATE_ENTRY_FEE_SCALE,
-            authorPremiumBps: AUTHOR_PREMIUM_BPS,
+            creatorPremiumBps: CREATOR_PREMIUM_BPS,
             earlyWithdrawPenaltyBps: EARLY_WITHDRAW_PENALTY_BPS,
             yieldBearingEscrow: false,
             minStake: MIN_STAKE,
@@ -77,7 +77,7 @@ contract BeliefFactoryTest is Test {
 
         MarketParams memory params = factory.getDefaultParams();
         assertEq(params.lockPeriod, LOCK_PERIOD);
-        assertEq(params.authorPremiumBps, AUTHOR_PREMIUM_BPS);
+        assertEq(params.creatorPremiumBps, CREATOR_PREMIUM_BPS);
     }
 
     function test_Constructor_RevertOnZeroUsdc() public {
@@ -91,7 +91,7 @@ contract BeliefFactoryTest is Test {
 
     function test_CreateMarket_NoInitialCommitment() public {
         vm.prank(alice);
-        address market = factory.createMarket(POST_ID_1, 0);
+        address market = factory.createMarket(POST_ID_1, 0, Side.Support);
 
         assertTrue(market != address(0));
         assertEq(factory.getMarket(POST_ID_1), market);
@@ -110,19 +110,19 @@ contract BeliefFactoryTest is Test {
         uint256 balanceBefore = usdc.balanceOf(alice);
 
         vm.prank(alice);
-        address market = factory.createMarket(POST_ID_1, commitment);
+        address market = factory.createMarket(POST_ID_1, commitment, Side.Support);
 
         // Verify USDC was transferred to vault (not market)
         assertEq(usdc.balanceOf(alice), balanceBefore - commitment);
         assertEq(usdc.balanceOf(factory.getVault()), commitment);
 
-        // Verify author has a position
+        // Verify creator has a position
         BeliefMarket beliefMarket = BeliefMarket(market);
         uint256[] memory positions = beliefMarket.getUserPositions(alice);
         assertEq(positions.length, 1);
 
         // Verify premium was deducted
-        uint256 premium = (commitment * AUTHOR_PREMIUM_BPS) / 10000;
+        uint256 premium = (commitment * CREATOR_PREMIUM_BPS) / 10000;
         uint256 netAmount = commitment - premium;
         Position memory pos = beliefMarket.getPosition(positions[0]);
         assertEq(pos.amount, netAmount);
@@ -133,29 +133,29 @@ contract BeliefFactoryTest is Test {
     }
 
     function test_CreateMarket_EmitsEvent() public {
-        // We check indexed params (postId, author) but not the market address
+        // We check indexed params (postId, creator) but not the market address
         vm.expectEmit(true, false, true, false);
         emit IBeliefFactory.MarketCreated(POST_ID_1, address(0), alice);
 
         vm.prank(alice);
-        factory.createMarket(POST_ID_1, 0);
+        factory.createMarket(POST_ID_1, 0, Side.Support);
     }
 
     function test_CreateMarket_RevertIfAlreadyExists() public {
         vm.prank(alice);
-        factory.createMarket(POST_ID_1, 0);
+        factory.createMarket(POST_ID_1, 0, Side.Support);
 
         vm.prank(bob);
         vm.expectRevert(IBeliefFactory.MarketAlreadyExists.selector);
-        factory.createMarket(POST_ID_1, 0);
+        factory.createMarket(POST_ID_1, 0, Side.Support);
     }
 
     function test_CreateMarket_MultipleMarkets() public {
         vm.prank(alice);
-        address market1 = factory.createMarket(POST_ID_1, 0);
+        address market1 = factory.createMarket(POST_ID_1, 0, Side.Support);
 
         vm.prank(bob);
-        address market2 = factory.createMarket(POST_ID_2, 0);
+        address market2 = factory.createMarket(POST_ID_2, 0, Side.Support);
 
         assertTrue(market1 != market2);
         assertEq(factory.getMarket(POST_ID_1), market1);
@@ -175,7 +175,7 @@ contract BeliefFactoryTest is Test {
         assertFalse(factory.marketExists(POST_ID_1));
 
         vm.prank(alice);
-        factory.createMarket(POST_ID_1, 0);
+        factory.createMarket(POST_ID_1, 0, Side.Support);
 
         assertTrue(factory.marketExists(POST_ID_1));
     }
@@ -192,7 +192,7 @@ contract BeliefFactoryTest is Test {
             lateEntryFeeBaseBps: 100,
             lateEntryFeeMaxBps: 1000,
             lateEntryFeeScale: 500e6,
-            authorPremiumBps: 300,
+            creatorPremiumBps: 300,
             yieldBearingEscrow: false,
             minStake: MIN_STAKE,
             maxStake: MAX_STAKE
@@ -203,12 +203,12 @@ contract BeliefFactoryTest is Test {
 
         MarketParams memory actualParams = factory.getDefaultParams();
         assertEq(actualParams.lockPeriod, 60 days);
-        assertEq(actualParams.authorPremiumBps, 300);
+        assertEq(actualParams.creatorPremiumBps, 300);
     }
 
     function test_SetDefaultParams_RevertIfBpsExceedMax() public {
         MarketParams memory p = _defaultParams();
-        p.authorPremiumBps = 10_001;
+        p.creatorPremiumBps = 10_001;
         vm.prank(owner);
         vm.expectRevert(IBeliefFactory.InvalidParams.selector);
         factory.setDefaultParams(p);
@@ -310,7 +310,7 @@ contract BeliefFactoryTest is Test {
 
         vm.prank(alice);
         vm.expectRevert(abi.encodeWithSignature("EnforcedPause()"));
-        factory.createMarket(POST_ID_1, 0);
+        factory.createMarket(POST_ID_1, 0, Side.Support);
     }
 
     function test_Pause_UnpauseAllowsCreateMarket() public {
@@ -321,7 +321,7 @@ contract BeliefFactoryTest is Test {
         factory.unpause();
 
         vm.prank(alice);
-        address market = factory.createMarket(POST_ID_1, 0);
+        address market = factory.createMarket(POST_ID_1, 0, Side.Support);
         assertTrue(market != address(0));
     }
 
@@ -334,7 +334,7 @@ contract BeliefFactoryTest is Test {
     function test_PauseVault_BlocksDeposits() public {
         // Create market first
         vm.prank(alice);
-        address market = factory.createMarket(POST_ID_1, 0);
+        address market = factory.createMarket(POST_ID_1, 0, Side.Support);
 
         // Pause vault
         vm.prank(owner);
@@ -349,7 +349,7 @@ contract BeliefFactoryTest is Test {
     function test_PauseVault_WithdrawalsStillWork() public {
         // Create market with commitment
         vm.prank(alice);
-        address market = factory.createMarket(POST_ID_1, 10_000e6);
+        address market = factory.createMarket(POST_ID_1, 10_000e6, Side.Support);
 
         // Warp past lock period
         vm.warp(block.timestamp + 31 days);
@@ -378,7 +378,7 @@ contract BeliefFactoryTest is Test {
     function test_Integration_CreateMarketAndStake() public {
         // Alice creates a market with initial commitment
         vm.prank(alice);
-        address market = factory.createMarket(POST_ID_1, 10_000e6);
+        address market = factory.createMarket(POST_ID_1, 10_000e6, Side.Support);
 
         BeliefMarket beliefMarket = BeliefMarket(market);
 
@@ -398,10 +398,10 @@ contract BeliefFactoryTest is Test {
     function test_Integration_CloneIsolation() public {
         // Create two markets
         vm.prank(alice);
-        address market1 = factory.createMarket(POST_ID_1, 1000e6);
+        address market1 = factory.createMarket(POST_ID_1, 1000e6, Side.Support);
 
         vm.prank(bob);
-        address market2 = factory.createMarket(POST_ID_2, 2000e6);
+        address market2 = factory.createMarket(POST_ID_2, 2000e6, Side.Support);
 
         BeliefMarket beliefMarket1 = BeliefMarket(market1);
         BeliefMarket beliefMarket2 = BeliefMarket(market2);
@@ -427,7 +427,7 @@ contract BeliefFactoryTest is Test {
 
         vm.startPrank(alice);
         usdc.approve(factory.getVault(), commitment);
-        address market = factory.createMarket(POST_ID_1, commitment);
+        address market = factory.createMarket(POST_ID_1, commitment, Side.Support);
         vm.stopPrank();
 
         assertTrue(market != address(0));
