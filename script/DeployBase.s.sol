@@ -23,7 +23,7 @@ contract DeployBase is Script {
             lateEntryFeeBaseBps: 100, // 1%
             lateEntryFeeMaxBps: 750, // 7.5%
             lateEntryFeeScale: 1000e6, // +1 bps per $1000
-            authorPremiumBps: 1000, // 10%
+            creatorPremiumBps: 1000, // 10%
             earlyWithdrawPenaltyBps: 1500, // 15%
             yieldBearingEscrow: false,
             minStake: 5e6, // $5 USDC

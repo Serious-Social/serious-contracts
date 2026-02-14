@@ -16,7 +16,7 @@ contract BeliefMarketTest is Test {
     address public alice = makeAddr("alice");
     address public bob = makeAddr("bob");
     address public charlie = makeAddr("charlie");
-    address public author = makeAddr("author");
+    address public creator = makeAddr("creator");
 
     bytes32 public constant POST_ID = keccak256("test-post-1");
 
@@ -26,7 +26,7 @@ contract BeliefMarketTest is Test {
     uint16 constant LATE_ENTRY_FEE_BASE_BPS = 50; // 0.5%
     uint16 constant LATE_ENTRY_FEE_MAX_BPS = 500; // 5%
     uint64 constant LATE_ENTRY_FEE_SCALE = 1000e6; // +1 bps per $1000
-    uint16 constant AUTHOR_PREMIUM_BPS = 200; // 2%
+    uint16 constant CREATOR_PREMIUM_BPS = 200; // 2%
     uint16 constant EARLY_WITHDRAW_PENALTY_BPS = 500; // 5%
     uint64 constant MIN_STAKE = 5e6; // $5 USDC
     uint64 constant MAX_STAKE = 100_000e6; // $100k USDC (wide for testing)
@@ -45,7 +45,7 @@ contract BeliefMarketTest is Test {
         usdc.mint(alice, 100_000e6);
         usdc.mint(bob, 100_000e6);
         usdc.mint(charlie, 100_000e6);
-        usdc.mint(author, 100_000e6);
+        usdc.mint(creator, 100_000e6);
 
         // Approve vault (not market) for all users
         vm.prank(alice);
@@ -54,7 +54,7 @@ contract BeliefMarketTest is Test {
         usdc.approve(address(vault), type(uint256).max);
         vm.prank(charlie);
         usdc.approve(address(vault), type(uint256).max);
-        vm.prank(author);
+        vm.prank(creator);
         usdc.approve(address(vault), type(uint256).max);
     }
 
@@ -65,7 +65,7 @@ contract BeliefMarketTest is Test {
             lateEntryFeeBaseBps: LATE_ENTRY_FEE_BASE_BPS,
             lateEntryFeeMaxBps: LATE_ENTRY_FEE_MAX_BPS,
             lateEntryFeeScale: LATE_ENTRY_FEE_SCALE,
-            authorPremiumBps: AUTHOR_PREMIUM_BPS,
+            creatorPremiumBps: CREATOR_PREMIUM_BPS,
             earlyWithdrawPenaltyBps: EARLY_WITHDRAW_PENALTY_BPS,
             yieldBearingEscrow: false,
             minStake: MIN_STAKE,
@@ -74,12 +74,12 @@ contract BeliefMarketTest is Test {
     }
 
     function _initializeMarket() internal {
-        market.initialize(POST_ID, address(vault), _defaultParams(), address(0), 0);
+        market.initialize(POST_ID, address(vault), _defaultParams(), address(0), 0, Side.Support);
     }
 
-    function _initializeMarketWithAuthor(uint256 authorCommitment) internal {
-        // Vault pulls USDC from author during initialize (no pre-transfer needed)
-        market.initialize(POST_ID, address(vault), _defaultParams(), author, authorCommitment);
+    function _initializeMarketWithCreator(uint256 creatorCommitment) internal {
+        // Vault pulls USDC from creator during initialize (no pre-transfer needed)
+        market.initialize(POST_ID, address(vault), _defaultParams(), creator, creatorCommitment, Side.Support);
     }
 
     /*//////////////////////////////////////////////////////////////
@@ -98,29 +98,52 @@ contract BeliefMarketTest is Test {
         assertEq(params.minRewardDuration, MIN_REWARD_DURATION);
     }
 
-    function test_Initialize_WithAuthorCommitment() public {
-        uint256 authorCommitment = 10_000e6;
-        _initializeMarketWithAuthor(authorCommitment);
+    function test_Initialize_WithCreatorCommitment() public {
+        uint256 creatorCommitment = 10_000e6;
+        _initializeMarketWithCreator(creatorCommitment);
 
-        // Author pays 2% premium
-        uint256 premium = (authorCommitment * AUTHOR_PREMIUM_BPS) / 10000;
-        uint256 netAmount = authorCommitment - premium;
+        // Creator pays 2% premium
+        uint256 premium = (creatorCommitment * CREATOR_PREMIUM_BPS) / 10000;
+        uint256 netAmount = creatorCommitment - premium;
 
         MarketState memory state = market.getMarketState();
         assertEq(state.supportPrincipal, netAmount);
         assertEq(state.srpBalance, premium);
 
-        // Author should have position 1
-        uint256[] memory positions = market.getUserPositions(author);
+        // Creator should have position 1
+        uint256[] memory positions = market.getUserPositions(creator);
         assertEq(positions.length, 1);
         assertEq(positions[0], 1);
+    }
+
+    function test_Initialize_WithCreatorCommitmentOnOppose() public {
+        uint256 creatorCommitment = 10_000e6;
+        // Initialize with creator on Oppose side
+        market.initialize(POST_ID, address(vault), _defaultParams(), creator, creatorCommitment, Side.Oppose);
+
+        // Creator pays 2% premium
+        uint256 premium = (creatorCommitment * CREATOR_PREMIUM_BPS) / 10000;
+        uint256 netAmount = creatorCommitment - premium;
+
+        MarketState memory state = market.getMarketState();
+        // Principal should be in oppose pool, not support
+        assertEq(state.opposePrincipal, netAmount);
+        assertEq(state.supportPrincipal, 0);
+        assertEq(state.srpBalance, premium);
+
+        // Creator should have position 1 on Oppose side
+        uint256[] memory positions = market.getUserPositions(creator);
+        assertEq(positions.length, 1);
+        Position memory pos = market.getPosition(positions[0]);
+        assertEq(uint8(pos.side), uint8(Side.Oppose));
+        assertEq(pos.amount, netAmount);
     }
 
     function test_Initialize_RevertIfAlreadyInitialized() public {
         _initializeMarket();
 
         vm.expectRevert("Already initialized");
-        market.initialize(POST_ID, address(vault), _defaultParams(), address(0), 0);
+        market.initialize(POST_ID, address(vault), _defaultParams(), address(0), 0, Side.Support);
     }
 
     /*//////////////////////////////////////////////////////////////
@@ -599,33 +622,33 @@ contract BeliefMarketTest is Test {
     //////////////////////////////////////////////////////////////*/
 
     function test_ClaimRewards_AfterMinDuration() public {
-        _initializeMarketWithAuthor(10_000e6);
+        _initializeMarketWithCreator(10_000e6);
 
-        // Warp so author's position builds weight before Alice stakes
+        // Warp so creator's position builds weight before Alice stakes
         vm.warp(block.timestamp + 1 days);
 
         // Alice stakes (will pay late entry fee which goes to SRP)
-        // A checkpoint will be created with author's accumulated weight
+        // A checkpoint will be created with creator's accumulated weight
         vm.prank(alice);
         market.commitSupport(10_000e6);
 
         // Warp past min reward duration
         vm.warp(block.timestamp + MIN_REWARD_DURATION + 1);
 
-        // Author (position 1) should have pending rewards from Alice's late entry fee
-        uint256 authorPending = market.pendingRewards(1);
-        assertGt(authorPending, 0);
+        // Creator (position 1) should have pending rewards from Alice's late entry fee
+        uint256 creatorPending = market.pendingRewards(1);
+        assertGt(creatorPending, 0);
 
-        uint256 balanceBefore = usdc.balanceOf(author);
-        vm.prank(author);
+        uint256 balanceBefore = usdc.balanceOf(creator);
+        vm.prank(creator);
         uint256 claimed = market.claimRewards(1);
 
-        assertEq(claimed, authorPending);
-        assertEq(usdc.balanceOf(author) - balanceBefore, claimed);
+        assertEq(claimed, creatorPending);
+        assertEq(usdc.balanceOf(creator) - balanceBefore, claimed);
     }
 
     function test_ClaimRewards_RevertBeforeMinDuration() public {
-        _initializeMarketWithAuthor(10_000e6);
+        _initializeMarketWithCreator(10_000e6);
 
         vm.prank(alice);
         uint256 positionId = market.commitSupport(10_000e6);
@@ -637,7 +660,7 @@ contract BeliefMarketTest is Test {
     }
 
     function test_PendingRewards_ZeroBeforeMinDuration() public {
-        _initializeMarketWithAuthor(10_000e6);
+        _initializeMarketWithCreator(10_000e6);
 
         vm.prank(alice);
         uint256 positionId = market.commitSupport(10_000e6);
@@ -647,7 +670,7 @@ contract BeliefMarketTest is Test {
     }
 
     function test_ClaimRewards_RevertIfNotOwner() public {
-        _initializeMarketWithAuthor(10_000e6);
+        _initializeMarketWithCreator(10_000e6);
 
         vm.prank(alice);
         uint256 positionId = market.commitSupport(10_000e6);
@@ -940,7 +963,7 @@ contract BeliefMarketTest is Test {
         MarketParams memory customParams = _defaultParams();
         customParams.earlyWithdrawPenaltyBps = 0;
 
-        market.initialize(POST_ID, address(vault), customParams, address(0), 0);
+        market.initialize(POST_ID, address(vault), customParams, address(0), 0, Side.Support);
 
         uint256 amount = 1000e6;
         vm.prank(alice);
@@ -1094,11 +1117,11 @@ contract BeliefMarketTest is Test {
     //////////////////////////////////////////////////////////////*/
 
     function test_UnallocatedSrp_SoleStakerRecoversPremium() public {
-        // Author creates market — nobody else participates
+        // Creator creates market — nobody else participates
         uint256 commitment = 10_000e6;
-        _initializeMarketWithAuthor(commitment);
+        _initializeMarketWithCreator(commitment);
 
-        uint256 premium = (commitment * uint256(AUTHOR_PREMIUM_BPS)) / 10000;
+        uint256 premium = (commitment * uint256(CREATOR_PREMIUM_BPS)) / 10000;
 
         // Premium is unallocated
         assertEq(market.unallocatedSrp(), premium);
@@ -1106,59 +1129,59 @@ contract BeliefMarketTest is Test {
         // Warp past lock period
         vm.warp(block.timestamp + LOCK_PERIOD + 1);
 
-        uint256 balanceBefore = usdc.balanceOf(author);
+        uint256 balanceBefore = usdc.balanceOf(creator);
 
-        // Author withdraws — flush should fire during auto-claim
-        vm.prank(author);
+        // Creator withdraws — flush should fire during auto-claim
+        vm.prank(creator);
         market.withdraw(1);
 
-        uint256 balanceAfter = usdc.balanceOf(author);
+        uint256 balanceAfter = usdc.balanceOf(creator);
         uint256 totalReceived = balanceAfter - balanceBefore;
 
-        // Author should get back principal + premium (minus rounding dust)
+        // Creator should get back principal + premium (minus rounding dust)
         assertApproxEqAbs(totalReceived, commitment, 1, "Sole staker should recover full commitment including premium");
         assertEq(market.unallocatedSrp(), 0, "Unallocated SRP should be flushed");
         assertLe(market.srpBalance(), 1, "SRP should be empty (at most rounding dust)");
     }
 
     function test_UnallocatedSrp_FlushedOnClaimRewards() public {
-        // Author creates market, premium is unallocated
-        _initializeMarketWithAuthor(10_000e6);
+        // Creator creates market, premium is unallocated
+        _initializeMarketWithCreator(10_000e6);
 
-        uint256 premium = (10_000e6 * uint256(AUTHOR_PREMIUM_BPS)) / 10000;
+        uint256 premium = (10_000e6 * uint256(CREATOR_PREMIUM_BPS)) / 10000;
         assertEq(market.unallocatedSrp(), premium);
 
         // Warp past min reward duration
         vm.warp(block.timestamp + MIN_REWARD_DURATION + 1);
 
-        // Author claims rewards — should flush unallocated SRP first
-        vm.prank(author);
+        // Creator claims rewards — should flush unallocated SRP first
+        vm.prank(creator);
         uint256 claimed = market.claimRewards(1);
 
-        assertGt(claimed, 0, "Author should receive rewards from flushed premium");
+        assertGt(claimed, 0, "Creator should receive rewards from flushed premium");
         assertEq(market.unallocatedSrp(), 0, "Unallocated SRP should be flushed on claim");
     }
 
-    function test_UnallocatedSrp_AuthorPremiumDistributed() public {
-        // Author creates market with initial commitment — premium goes to SRP
+    function test_UnallocatedSrp_CreatorPremiumDistributed() public {
+        // Creator creates market with initial commitment — premium goes to SRP
         // At that point totalWeight is 0, so funds should be tracked as unallocated
-        _initializeMarketWithAuthor(10_000e6);
+        _initializeMarketWithCreator(10_000e6);
 
-        uint256 premium = (10_000e6 * uint256(AUTHOR_PREMIUM_BPS)) / 10000;
+        uint256 premium = (10_000e6 * uint256(CREATOR_PREMIUM_BPS)) / 10000;
 
         // Premium should be in srpBalance but marked as unallocated
-        assertEq(market.srpBalance(), premium, "SRP should hold author premium");
+        assertEq(market.srpBalance(), premium, "SRP should hold creator premium");
         assertEq(market.unallocatedSrp(), premium, "Premium should be unallocated (no weight at deposit)");
 
         // Accumulators should still be zero (nothing distributed yet)
         assertEq(market.rewardPerPrincipalTime(), 0);
         assertEq(market.rewardPerPrincipalPerTime(), 0);
 
-        // Wait so author builds weight
+        // Wait so creator builds weight
         vm.warp(block.timestamp + 1 days);
 
         // Alice stakes — pays late entry fee which triggers _addToSrp with totalWeight > 0
-        // This should flush the unallocated author premium through the accumulators
+        // This should flush the unallocated creator premium through the accumulators
         vm.prank(alice);
         market.commitSupport(10_000e6);
 
@@ -1169,21 +1192,21 @@ contract BeliefMarketTest is Test {
         // Wait past min reward duration
         vm.warp(block.timestamp + MIN_REWARD_DURATION + 1);
 
-        // Author should have claimable rewards from the premium + Alice's entry fee
-        uint256 authorPending = market.pendingRewards(1);
-        assertGt(authorPending, 0, "Author should have claimable rewards from flushed premium");
+        // Creator should have claimable rewards from the premium + Alice's entry fee
+        uint256 creatorPending = market.pendingRewards(1);
+        assertGt(creatorPending, 0, "Creator should have claimable rewards from flushed premium");
 
-        // Author can actually claim them
-        uint256 balanceBefore = usdc.balanceOf(author);
-        vm.prank(author);
+        // Creator can actually claim them
+        uint256 balanceBefore = usdc.balanceOf(creator);
+        vm.prank(creator);
         market.claimRewards(1);
-        uint256 balanceAfter = usdc.balanceOf(author);
-        assertEq(balanceAfter - balanceBefore, authorPending);
+        uint256 balanceAfter = usdc.balanceOf(creator);
+        assertEq(balanceAfter - balanceBefore, creatorPending);
     }
 
     function test_UnallocatedSrp_NoStuckFundsAfterFullWithdraw() public {
-        // Author creates market — premium is unallocated
-        _initializeMarketWithAuthor(10_000e6);
+        // Creator creates market — premium is unallocated
+        _initializeMarketWithCreator(10_000e6);
 
         // Alice stakes (triggers flush of unallocated SRP)
         vm.warp(block.timestamp + 1 days);
@@ -1194,7 +1217,7 @@ contract BeliefMarketTest is Test {
         vm.warp(block.timestamp + LOCK_PERIOD + 1);
 
         // Both withdraw (auto-claiming rewards)
-        vm.prank(author);
+        vm.prank(creator);
         market.withdraw(1);
         vm.prank(alice);
         market.withdraw(alicePos);
@@ -1206,7 +1229,7 @@ contract BeliefMarketTest is Test {
     }
 
     function test_UnallocatedSrp_MultipleZeroWeightDeposits() public {
-        // Initialize without author so we can control timing
+        // Initialize without creator so we can control timing
         _initializeMarket();
 
         // First staker — no fee, no SRP, weight starts at 0

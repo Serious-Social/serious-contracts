@@ -31,7 +31,7 @@ contract DeployBaseSepolia is Script {
             lateEntryFeeBaseBps: 50, // 0.5%
             lateEntryFeeMaxBps: 500, // 5%
             lateEntryFeeScale: 1000e6, // +1 bps per $1000
-            authorPremiumBps: 200, // 2%
+            creatorPremiumBps: 200, // 2%
             earlyWithdrawPenaltyBps: 500, // 5%
             yieldBearingEscrow: false,
             minStake: 5e6, // $5 USDC

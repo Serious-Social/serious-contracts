@@ -68,7 +68,7 @@ If it rewards speed or cleverness, it is probably wrong.
 Keep v0 minimal:
 - Binary belief only (SUPPORT/OPPOSE)
 - One market per post
-- No author revenue
+- No creator revenue
 - No governance
 - No composability promises
 

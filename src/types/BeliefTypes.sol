@@ -47,8 +47,8 @@ struct MarketParams {
     /// @notice Principal amount (in token units) that adds 1 bps to late entry fee
     /// @dev For USDC (6 decimals), 1000e6 means fee increases 1 bps per $1000 staked
     uint64 lateEntryFeeScale;
-    /// @notice Author challenge premium in basis points (e.g., 200 = 2%)
-    uint16 authorPremiumBps;
+    /// @notice Creator challenge premium in basis points (e.g., 200 = 2%)
+    uint16 creatorPremiumBps;
     /// @notice Penalty in basis points for early withdrawal (e.g., 500 = 5%). Set to 0 to disable.
     uint16 earlyWithdrawPenaltyBps;
     /// @notice Whether to deposit principal into Aave for yield-bearing escrow
