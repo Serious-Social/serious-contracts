@@ -70,6 +70,18 @@ This is O(1) — no iteration over deposits required.
 
 ### Belief Curve
 
+<p align="center">
+  <img src="assets/belief_curve_line_chart.png"
+       alt="Time-weighted conviction comparison"
+       width="900">
+</p>
+
+<p align="center">
+  <sub><em>
+    Figure 2. Although Bob's $200 stake gives him twice Alice's capital, her ten-day head start keeps her belief share above 50% until day 20. After that, Bob's conviction overtakes hers, gradually shifting the balance toward the Oppose side. Note that the belief curve is non-linear, even though time-weighted conviction accrues linearly.
+  </em></sub>
+</p>
+
 ```
 belief(t) = W_support(t) / (W_support(t) + W_oppose(t))
 ```
