@@ -43,6 +43,8 @@ Users approve the vault once. Markets never hold tokens directly — they call t
 
 ### Time-Weighted Signal
 
+![Time-weighted conviction diagram showing how an earlier $100 stake can temporarily outweigh a later $200 stake](assets/time-weighted-conviction.png)
+
 Each side (Support/Oppose) maintains:
 - `P` = total principal
 - `S` = sum of (deposit_amount × deposit_timestamp)
