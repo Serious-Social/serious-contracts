@@ -912,31 +912,128 @@ contract BeliefMarketTest is Test {
         // Wait for weight to build
         vm.warp(block.timestamp + 1 days);
 
-        // Bob stakes and pays late entry fee, creating rewards
+        // Bob stakes and pays late entry fee, which accrues entirely to Alice
         vm.prank(bob);
         uint256 bobPos = market.commitSupport(10_000e6);
 
-        // Alice early-withdraws — forfeits pending rewards
+        vm.warp(block.timestamp + 1 days);
+
+        // Alice early-withdraws — forfeits pending rewards back to the remaining stakers
         vm.prank(alice);
         market.withdraw(alicePos);
 
-        // Alice's pending rewards should now be 0 (withdrawn = true)
-        uint256 alicePending = market.pendingRewards(alicePos);
-        assertEq(alicePending, 0, "Early withdrawer should have 0 pending rewards");
+        assertEq(market.pendingRewards(alicePos), 0, "Early withdrawer should have 0 pending rewards");
 
         // Wait past min reward duration for Bob
         vm.warp(block.timestamp + MIN_REWARD_DURATION + 1);
 
-        // Bob should still be able to claim rewards
+        // Bob is the only remaining staker, so the whole SRP (Alice's forfeited fee + her penalty) is his
         uint256 bobPending = market.pendingRewards(bobPos);
-        // Bob's rewards may be 0 or very small since most SRP was funded when Alice was still in
-        // But the penalty from Alice's early withdraw should generate new rewards for Bob
-        // Let's just verify Bob can claim without reverting if he has rewards
-        if (bobPending > 0) {
-            vm.prank(bob);
-            uint256 claimed = market.claimRewards(bobPos);
-            assertGt(claimed, 0);
-        }
+        assertApproxEqAbs(bobPending, market.srpBalance(), 2, "Forfeited rewards should be claimable by Bob");
+
+        vm.prank(bob);
+        market.claimRewards(bobPos);
+        assertLe(market.srpBalance(), 2, "SRP should hold at most rounding dust");
+    }
+
+    /// @dev Figure 3, scenario 1 in the README, with DeployBase.s.sol params
+    function test_EarlyWithdraw_ForfeitedRewardsGoToRemainingStakers_Figure3() public {
+        MarketParams memory p = _defaultParams();
+        p.minRewardDuration = 3 days;
+        p.lateEntryFeeBaseBps = 100;
+        p.lateEntryFeeMaxBps = 750;
+        p.creatorPremiumBps = 1000;
+        p.earlyWithdrawPenaltyBps = 1500;
+
+        uint256 t0 = block.timestamp;
+        vm.prank(alice);
+        usdc.approve(address(vault), type(uint256).max);
+        market.initialize(POST_ID, address(vault), p, alice, 100e6, Side.Support); // position 1: $90 net
+
+        vm.warp(t0 + 10 days);
+        vm.prank(bob);
+        uint256 bobPos = market.commitOppose(200e6); // $2 fee + $10 premium flushed to Alice
+
+        vm.warp(t0 + 25 days);
+        uint256 alicePending = market.pendingRewards(1);
+        assertApproxEqAbs(alicePending, 12e6, 1, "Alice accrued $12 before exiting");
+
+        vm.expectEmit(true, false, false, true);
+        emit IBeliefMarket.RewardsForfeited(1, alicePending);
+        vm.prank(alice);
+        market.withdraw(1);
+
+        // Bob receives Alice's forfeited $12 plus her $13.50 penalty
+        assertApproxEqAbs(market.pendingRewards(bobPos), 25.5e6, 1, "Bob should be entitled to $25.50");
+
+        vm.warp(t0 + 40 days);
+        vm.prank(bob);
+        market.withdraw(bobPos);
+        assertLe(market.srpBalance(), 1, "SRP should hold at most rounding dust");
+    }
+
+    function test_EarlyWithdraw_ForfeitSplitByWeight() public {
+        _initializeMarket();
+
+        vm.prank(alice);
+        uint256 alicePos = market.commitSupport(10_000e6);
+
+        vm.warp(block.timestamp + 1 days);
+
+        // Bob and Charlie enter together with equal stakes; their fees accrue to Alice
+        vm.prank(bob);
+        uint256 bobPos = market.commitSupport(5000e6);
+        vm.prank(charlie);
+        uint256 charliePos = market.commitOppose(5000e6);
+
+        vm.warp(block.timestamp + 1 days);
+        uint256 srpBefore = market.srpBalance();
+
+        vm.prank(alice);
+        market.withdraw(alicePos);
+
+        vm.warp(block.timestamp + MIN_REWARD_DURATION);
+        uint256 bobPending = market.pendingRewards(bobPos);
+        uint256 charliePending = market.pendingRewards(charliePos);
+
+        // Charlie paid a slightly higher fee (more principal staked), so net stakes differ by a few units
+        assertApproxEqRel(bobPending, charliePending, 0.001e18, "Equal-weight stakers should split evenly");
+        assertApproxEqAbs(bobPending + charliePending, market.srpBalance(), 2, "All SRP should be claimable");
+        assertGt(market.srpBalance(), srpBefore, "Penalty should add to SRP");
+    }
+
+    function test_EarlyWithdraw_LastStakerForfeitHeldUntilNextStaker() public {
+        _initializeMarket();
+
+        vm.prank(alice);
+        uint256 alicePos = market.commitSupport(10_000e6);
+
+        vm.warp(block.timestamp + 1 days);
+        vm.prank(bob);
+        uint256 bobPos = market.commitSupport(10_000e6); // fee accrues to Alice
+
+        vm.warp(block.timestamp + 1 days);
+        vm.prank(bob);
+        market.withdraw(bobPos); // Bob exits early; his penalty goes to Alice
+
+        vm.warp(block.timestamp + MIN_REWARD_DURATION);
+        uint256 alicePending = market.pendingRewards(alicePos);
+        assertGt(alicePending, 0);
+
+        // Alice is the last staker: no penalty, and her forfeited rewards wait in unallocatedSrp
+        vm.prank(alice);
+        market.withdraw(alicePos);
+        assertEq(market.unallocatedSrp(), alicePending, "Forfeit should be held as unallocated SRP");
+
+        // The next staker eventually receives it
+        vm.prank(charlie);
+        uint256 charliePos = market.commitSupport(1000e6);
+        vm.warp(block.timestamp + MIN_REWARD_DURATION + 1);
+
+        vm.prank(charlie);
+        uint256 claimed = market.claimRewards(charliePos);
+        assertApproxEqAbs(claimed, alicePending, 1, "Next staker should inherit the forfeited rewards");
+        assertLe(market.srpBalance(), 1, "SRP should hold at most rounding dust");
     }
 
     function test_EarlyWithdraw_NormalWithdrawUnchanged() public {
@@ -1277,5 +1374,83 @@ contract BeliefMarketTest is Test {
         vm.expectEmit(true, true, false, true);
         emit IBeliefMarket.EarlyWithdrawn(positionId, alice, expectedReturn, expectedPenalty);
         market.withdraw(positionId);
+    }
+
+    /*//////////////////////////////////////////////////////////////
+                        SRP ACCOUNTING FUZZ TEST
+    //////////////////////////////////////////////////////////////*/
+
+    /// @dev Invariant: every unit in srpBalance is either unallocated or claimable by an open position.
+    ///      Runs a random sequence of commits, claims, early/normal withdrawals and time jumps.
+    function testFuzz_SrpFullyAccounted(uint256 seed) public {
+        bool withCreator = seed % 2 == 0;
+        if (withCreator) _initializeMarketWithCreator(1000e6);
+        else _initializeMarket();
+
+        address[3] memory users = [alice, bob, charlie];
+        uint256[] memory ids = new uint256[](32);
+        uint256 n;
+        if (withCreator) ids[n++] = 1;
+
+        for (uint256 i = 0; i < 24; i++) {
+            uint256 r = uint256(keccak256(abi.encode(seed, i)));
+            uint256 op = r % 4;
+            if (op == 0 && n < ids.length) {
+                address user = users[(r >> 8) % 3];
+                uint256 amount = bound(r >> 16, MIN_STAKE, 5000e6);
+                vm.prank(user);
+                ids[n++] = (r >> 128) % 2 == 0 ? market.commitSupport(amount) : market.commitOppose(amount);
+            } else if (op == 1 && n > 0) {
+                uint256 id = ids[(r >> 8) % n];
+                if (!market.getPosition(id).withdrawn) {
+                    vm.prank(_ownerOf(id, withCreator));
+                    market.withdraw(id);
+                }
+            } else if (op == 2 && n > 0) {
+                uint256 id = ids[(r >> 8) % n];
+                vm.prank(_ownerOf(id, withCreator));
+                try market.claimRewards(id) {} catch {}
+            } else {
+                vm.warp(block.timestamp + bound(r >> 8, 1 hours, 20 days));
+            }
+            _assertSrpAccounted(ids, n);
+        }
+
+        // Drain: everyone exits after their lock; only rounding dust may remain
+        vm.warp(block.timestamp + LOCK_PERIOD + 1);
+        for (uint256 i = 0; i < n; i++) {
+            if (market.getPosition(ids[i]).withdrawn) continue;
+            vm.prank(_ownerOf(ids[i], withCreator));
+            market.withdraw(ids[i]);
+        }
+        assertLe(market.srpBalance() - market.unallocatedSrp(), n + 1, "Only rounding dust should remain");
+    }
+
+    /// @dev Position owner for the fuzz test: id 1 is the creator's when present, else derived from vault calls
+    function _ownerOf(uint256 id, bool withCreator) internal view returns (address) {
+        if (withCreator && id == 1) return creator;
+        address[3] memory users = [alice, bob, charlie];
+        for (uint256 i = 0; i < 3; i++) {
+            uint256[] memory owned = market.getUserPositions(users[i]);
+            for (uint256 j = 0; j < owned.length; j++) {
+                if (owned[j] == id) return users[i];
+            }
+        }
+        revert("unknown position");
+    }
+
+    /// @dev srpBalance == unallocatedSrp + sum of accrued (ungated) rewards of open positions, up to rounding
+    function _assertSrpAccounted(uint256[] memory ids, uint256 n) internal view {
+        uint256 owed = market.unallocatedSrp();
+        for (uint256 i = 0; i < n; i++) {
+            Position memory pos = market.getPosition(ids[i]);
+            if (pos.withdrawn) continue;
+            uint256 dA = market.rewardPerPrincipalTime() - market.positionRewardPerPrincipalTimePaid(ids[i]);
+            uint256 dB = market.rewardPerPrincipalPerTime() - market.positionRewardPerPrincipalPerTimePaid(ids[i]);
+            owed += (pos.amount * (dA - uint256(pos.depositTimestamp) * dB)) / 1e27;
+        }
+        uint256 srp = market.srpBalance();
+        assertGe(srp, owed, "SRP must cover everything owed");
+        assertLe(srp - owed, n + 1, "SRP must not hold unclaimable funds beyond rounding dust");
     }
 }

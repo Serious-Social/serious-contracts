@@ -164,13 +164,21 @@ contract BeliefMarket is IBeliefMarket, ReentrancyGuard {
             }
         } else {
             // EARLY WITHDRAWAL: lock period has NOT expired
-            // Mark withdrawn (forfeits pending rewards — _calculatePendingRewards returns 0)
+            // Measure unclaimed rewards before marking withdrawn (_calculatePendingRewards returns 0 after)
+            uint256 forfeited = _calculatePendingRewards(positionId);
             pos.withdrawn = true;
 
-            // Update pool state (before _addToSrp so withdrawer is excluded from reward distribution)
+            // Update pool state (before reallocating so withdrawer is excluded from reward distribution)
             Pool storage pool = pos.side == Side.Support ? supportPool : opposePool;
             pool.principal -= pos.amount;
             pool.weightedTimestampSum -= pos.amount * pos.depositTimestamp;
+
+            // Forfeited rewards are already in srpBalance; route them to the remaining stakers
+            // (or to unallocatedSrp if none remain) so they are not stranded
+            if (forfeited > 0) {
+                _allocateSrp(forfeited);
+                emit RewardsForfeited(positionId, forfeited);
+            }
 
             // Calculate penalty and feed to SRP (only if remaining stakers exist to receive it)
             uint256 penalty = 0;
@@ -422,7 +430,15 @@ contract BeliefMarket is IBeliefMarket, ReentrancyGuard {
         if (amount == 0) return;
 
         srpBalance += amount;
+        _allocateSrp(amount);
 
+        emit SrpFunded(amount, source);
+    }
+
+    /// @notice Distribute funds already counted in srpBalance through the reward accumulators
+    /// @dev When totalWeight is zero, funds are held in unallocatedSrp until weight exists.
+    /// @param amount The amount to distribute (must already be included in srpBalance)
+    function _allocateSrp(uint256 amount) internal {
         uint256 totalWeight = _getTotalWeight();
         if (totalWeight > 0) {
             uint256 distributable = amount + unallocatedSrp;
@@ -435,8 +451,6 @@ contract BeliefMarket is IBeliefMarket, ReentrancyGuard {
         } else {
             unallocatedSrp += amount;
         }
-
-        emit SrpFunded(amount, source);
     }
 
     /// @notice Flush unallocated SRP through accumulators if weight exists

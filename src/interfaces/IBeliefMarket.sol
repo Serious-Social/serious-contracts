@@ -40,6 +40,11 @@ interface IBeliefMarket {
     /// @param penaltyFee Penalty amount sent to SRP
     event EarlyWithdrawn(uint256 indexed positionId, address indexed user, uint256 amountReturned, uint256 penaltyFee);
 
+    /// @notice Emitted when an early withdrawal forfeits unclaimed rewards back to the remaining stakers
+    /// @param positionId The position that forfeited its rewards
+    /// @param amount Unclaimed rewards redistributed (or held as unallocated SRP if no stakers remain)
+    event RewardsForfeited(uint256 indexed positionId, uint256 amount);
+
     /// @notice Emitted when fees are added to the Signal Reward Pool
     /// @param amount Amount added to SRP
     /// @param source Description of fee source (e.g., "late_entry", "creator_premium")

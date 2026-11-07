@@ -114,7 +114,7 @@ When a user stakes:
 Early withdrawal is **always allowed** — users are never trapped. If a user withdraws before `LOCK_PERIOD` expires:
 - A **penalty** (configurable, e.g. 15% of principal) is deducted
 - The penalty is routed to the SRP (only if remaining stakers exist to receive it)
-- Pending USDC rewards are forfeited
+- Pending USDC rewards are forfeited and redistributed to the remaining stakers by time-weighted signal (held as unallocated SRP if none remain)
 - If `earlyWithdrawPenaltyBps = 0`, the user exits with no penalty (but still forfeits rewards)
 
 ### Purpose
@@ -315,7 +315,7 @@ The factory owner can update default parameters for new markets via `setDefaultP
 
 - Always allowed — users are never trapped
 - A penalty (e.g. 15%) is deducted from principal and routed to the SRP
-- All pending USDC rewards are forfeited
+- All pending USDC rewards are forfeited and redistributed to the remaining stakers
 - Remaining principal is returned to the user
 
 In both cases, exits shift the belief curve — this is information, not punishment.
