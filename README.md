@@ -126,6 +126,12 @@ All fees flow to the Signal Reward Pool and are distributed to stakers based on 
 | `earlyWithdrawPenaltyBps` | Penalty for withdrawing before lock expires (feeds SRP) |
 | `minStake` / `maxStake` | Bounds on individual stake amounts |
 
+## Simulator
+
+`web/index.html` is an interactive model of a single market: add agents and commit / claim / withdraw events, then watch time-weighted conviction, the belief curve, reward entitlement and each agent's net USDC update together. It replays events through the same fee and accumulator logic as `BeliefMarket.sol` (in floating point), with presets for the deploy-script parameters and for the Figure 1–2 scenario plus two reward scenarios (an early exit and a top-up).
+
+It is a single self-contained file with no build step: open it in a browser, or serve the `web/` directory.
+
 ## Usage
 
 ### Build
