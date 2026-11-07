@@ -17,6 +17,8 @@ contract SeriousInvariantTest is Test {
 
     BeliefMarket[] public markets;
     address[] public creators;
+    uint256[] public creatorCommitments;
+    Side[] public creatorSides;
 
     // Actors
     address ALICE = makeAddr("alice");
@@ -42,7 +44,7 @@ contract SeriousInvariantTest is Test {
 
         // TODO: more variants? (e.g. zero entry fees, minRewardDuration == lockPeriod)
 
-        handler = new BeliefMarketHandler(usdc, vault, markets, creators, actors);
+        handler = new BeliefMarketHandler(usdc, vault, markets, creators, creatorCommitments, creatorSides, actors);
         targetContract(address(handler));
     }
 
@@ -73,8 +75,15 @@ contract SeriousInvariantTest is Test {
     function afterInvariant() external view {
         console.log("commit       ", handler.calls("commit"));
         console.log("withdraw     ", handler.calls("withdraw"));
-        console.log("  skipped    ", handler.calls("withdraw.skipped"));
+        console.log("  noOpen     ", handler.calls("withdraw.noOpenPositions"));
+        console.log("  heldEarly  ", handler.calls("withdraw.heldEarly"));
+        console.log("  early      ", handler.calls("withdraw.early"));
+        console.log("  normal     ", handler.calls("withdraw.normal"));
         console.log("claimRewards ", handler.calls("claimRewards"));
+        console.log("  noOpen     ", handler.calls("claimRewards.noOpenPositions"));
+        console.log("  tooEarly   ", handler.calls("claimRewards.tooEarly"));
+        console.log("  nothing    ", handler.calls("claimRewards.nothing"));
+        console.log("  paid       ", handler.calls("claimRewards.paid"));
         console.log("warp         ", handler.calls("warp"));
     }
 
@@ -83,7 +92,7 @@ contract SeriousInvariantTest is Test {
     //////////////////////////////////////////////////////////////*/
 
     function _createMarket(string memory label, Side side) internal {
-        address creator = makeAddr(string.concat("creator-", label));
+        address creator = actors[markets.length % actors.length];
         usdc.mint(creator, CREATOR_COMMITMENT);
 
         vm.startPrank(creator);
@@ -93,6 +102,8 @@ contract SeriousInvariantTest is Test {
 
         markets.push(BeliefMarket(market));
         creators.push(creator);
+        creatorCommitments.push(CREATOR_COMMITMENT);
+        creatorSides.push(side);
     }
 
     function _defaultParams() internal pure returns (MarketParams memory) {
