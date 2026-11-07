@@ -101,6 +101,18 @@ pending = amount × (ΔA - depositTime × ΔB)
 
 Each position snapshots A and B at deposit/claim time. This achieves constant-time reward calculation regardless of how many fee events have occurred.
 
+<p align="center">
+  <img src="assets/reward_entitlement_two_scenarios.png"
+       alt="Reward entitlement for Alice and Bob when Alice withdraws early versus tops up"
+       width="900">
+</p>
+
+<p align="center">
+  <sub><em>
+    Figure 3. Alice creates the market with $100 on day 0 ($90 staked after the 10% creator premium) and Bob stakes $200 on day 10. Bob's $2 late-entry fee releases the held $10 premium, and both go to Alice, the only staker with weight: $12. If Alice withdraws early on day 25, she forfeits that $12 and pays a $13.50 penalty, and both go to Bob, the only remaining staker. If she instead adds another $100, the $1 entry fee is split by conviction at that moment: $0.43 to Alice and $0.57 to Bob.
+  </em></sub>
+</p>
+
 ### Late Entry Fee
 
 ```
@@ -125,6 +137,12 @@ All fees flow to the Signal Reward Pool and are distributed to stakers based on 
 | `minRewardDuration` | Minimum stake time before rewards accrue |
 | `earlyWithdrawPenaltyBps` | Penalty for withdrawing before lock expires (feeds SRP) |
 | `minStake` / `maxStake` | Bounds on individual stake amounts |
+
+## Simulator
+
+`web/index.html` is an interactive model of a single market: add agents and commit / claim / withdraw events, then watch time-weighted conviction, the belief curve, reward entitlement and each agent's net USDC update together. It replays events through the same fee and accumulator logic as `BeliefMarket.sol` (in floating point), with presets for the deploy-script parameters and for the scenarios in Figures 1–3.
+
+It is a single self-contained file with no build step: open it in a browser, or serve the `web/` directory.
 
 ## Usage
 
