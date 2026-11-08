@@ -9,6 +9,32 @@ import {Side, MarketParams, MarketState, Position} from "../../src/types/BeliefT
 import {MockUSDC} from "../../src/mock/MockUSDC.sol";
 import {BeliefMarketHandler} from "./handlers/BeliefMarketHandler.sol";
 
+/// @title SeriousInvariantTest
+/// @notice Stateful fuzz (invariant) tests for BeliefMarket + BeliefVault.
+///
+/// SETUP
+/// - Two markets are created up front through the factory. Market 1 has no early-withdraw penalty,
+///   so both penalty branches get fuzzed.
+/// - Only the handler is fuzzed (targetContract). Direct calls to the markets would skip the
+///   handler's ghost bookkeeping, and Foundry can't fuzz EIP-1167 clones directly anyway.
+///
+/// THE FOUR INVARIANTS (checked after every handler call)
+/// 1. vaultBalanceMatchesMarkets: every USDC is accounted for (custody and conservation).
+/// 2. srpFullyAccounted:          the reward pool can pay everything it owes, and nothing is
+///                                stranded beyond rounding dust.
+/// 3. poolsMatchOpenPositions:    the pool totals that drive belief and rewards match the positions.
+/// 4. rewardsBoundedByFees:       non-zero-sum; rewards come only from fees, never from principal.
+///
+/// TWO KINDS OF CHECK
+/// - Consistency:  the contract against its own records (e.g. pool total vs sum of positions).
+/// - Conservation: the contract against the handler's ghosts, i.e. USDC actually seen moving.
+///   This catches bugs that keep the contract's books internally consistent.
+///
+/// KNOWN GAPS
+/// - Rewards are checked in total, not per position: a bug that paid the right total to the wrong
+///   positions would pass. Closing that needs a brute-force reference model of each entitlement.
+/// - With these params the late-entry fee never reaches its cap (lateEntryFeeMaxBps).
+/// - No end-of-run check that every position can still withdraw (liveness).
 contract SeriousInvariantTest is Test {
     MockUSDC public usdc;
     BeliefFactory public factory;
@@ -42,8 +68,9 @@ contract SeriousInvariantTest is Test {
         factory.setDefaultParams(p);
         _createMarket("market-1", Side.Oppose);
 
-        // TODO: more variants? (e.g. zero entry fees, minRewardDuration == lockPeriod)
+        // TODO: more variants? (e.g. small lateEntryFeeScale to reach the fee cap, minRewardDuration == lockPeriod)
 
+        // The handler gets the creator data so its ghosts start from the state setUp left behind
         handler = new BeliefMarketHandler(usdc, vault, markets, creators, creatorCommitments, creatorSides, actors);
         targetContract(address(handler));
     }
@@ -52,13 +79,19 @@ contract SeriousInvariantTest is Test {
                                INVARIANTS
     //////////////////////////////////////////////////////////////*/
 
-    /// @dev Cross-market: vault custody matches what each market thinks it holds.
+    /// @dev Property: every USDC is accounted for, checked three ways.
+    ///        a) Per market: the market's books (SRP + principal) == the vault's books for that market.
+    ///        b) Per market: that amount == ghost USDC in - USDC out (conservation, from observed transfers).
+    ///        c) Global:     the vault's real token balance == the sum over all markets.
+    ///      Catches: money leaving without being booked, one market credited with another's funds,
+    ///      fees or principal miscounted in a way the contract's own books agree with.
     function invariant_vaultBalanceMatchesMarkets() public view {
         uint256 vaultBalance = usdc.balanceOf(address(vault));
         uint256 totalMarketBalance = 0;
         for (uint256 i = 0; i < markets.length; i++) {
             BeliefMarket market = markets[i];
             MarketState memory state = market.getMarketState();
+            // srpBalance already includes unallocatedSrp
             uint256 marketBalance = state.srpBalance + state.supportPrincipal + state.opposePrincipal;
             assertEq(marketBalance, vault.marketBalance(address(market)), "market balance mismatch");
             assertEq(
@@ -72,13 +105,20 @@ contract SeriousInvariantTest is Test {
         assertEq(vaultBalance, totalMarketBalance, "vault balance mismatch");
     }
 
-    /// @dev Per market: srpBalance == unallocatedSrp + Σ owed to open positions (within dust).
+    /// @dev Property: the reward pool (SRP) is solvent and nothing in it is stranded.
+    ///        owed = unallocatedSrp + what every open position could claim
+    ///        owed <= srpBalance <= owed + rounding dust
+    ///      Catches: promising more rewards than the pool holds; funds stuck with no one able to
+    ///      claim them (the bug fixed in PR #5, where forfeited rewards were stranded).
     ///      Owed is recomputed from the accumulators, not pendingRewards(): that view returns 0
     ///      before minRewardDuration, but those rewards are already earmarked in srpBalance.
     function invariant_srpFullyAccounted() public view {
-        // Dust bound: each open position's owed amount is floored (< 1 unit each), and each paid claim,
-        // auto-claim and forfeit permanently orphans its floored remainder (< 1 unit each).
-        // Counters span all markets, so this is looser than a per-market bound but still sound.
+        // Why there is dust: the contract always rounds down, so it never owes more than it holds.
+        //  - Each open position's owed amount is rounded down: < 1 unit each (temporary).
+        //  - Each payout or forfeit rounds down and the leftover fraction stays in srpBalance with
+        //    no owner: < 1 unit each (permanent).
+        // 1 unit = 1e-6 USDC. Measured slack was about 50-75% of this bound, as expected if each
+        // round-down loses ~0.5 units on average. Counters span all markets (loose but sound).
         uint256 payoutEvents =
             handler.calls("claimRewards.paid") + handler.calls("withdraw.early") + handler.calls("withdraw.normal");
 
@@ -96,8 +136,16 @@ contract SeriousInvariantTest is Test {
         }
     }
 
-    /// @dev Per market and side: pool principal and weightedTimestampSum (the S in W = t·P − S)
-    ///      == Σ amount and Σ amount × depositTimestamp of non-withdrawn positions.
+    /// @dev Property: each pool's totals equal the sum over its open positions, per side.
+    ///        principal            == sum of amount
+    ///        weightedTimestampSum == sum of amount x depositTimestamp   (the S in W(t) = t x P - S)
+    ///      Also: principal == the handler's ghost_openPrincipal.
+    ///      Why it matters: W(t) drives both the belief curve and every reward split, so a wrong
+    ///      P or S silently skews belief and rewards.
+    ///      Catches: wrong amount removed on withdraw, principal booked to the wrong side,
+    ///      net/gross mix-ups.
+    ///      Loops over ALL positions and uses the contract's own `withdrawn` flag, so the
+    ///      sum doesn't depend on the handler's open list.
     function invariant_poolsMatchOpenPositions() public view {
         for (uint256 i = 0; i < markets.length; i++) {
             BeliefMarket market = markets[i];
@@ -120,17 +168,23 @@ contract SeriousInvariantTest is Test {
                     }
                 }
             }
+            // Contract vs its own position records
             assertEq(supportPrincipal, supportSum, "support principal mismatch");
             assertEq(opposePrincipal, opposeSum, "oppose principal mismatch");
             assertEq(supportWeightedTs, supportWeightedTsSum, "support weightedTimestampSum mismatch");
             assertEq(opposeWeightedTs, opposeWeightedTsSum, "oppose weightedTimestampSum mismatch");
+            // Contract vs what the handler observed
             assertEq(supportPrincipal, handler.ghost_openPrincipal(market, Side.Support), "support ghost mismatch");
             assertEq(opposePrincipal, handler.ghost_openPrincipal(market, Side.Oppose), "oppose ghost mismatch");
         }
     }
 
-    /// @dev Non-zero-sum: rewards paid out never exceed fees paid in.
-    ///      Exact form: srpBalance == premium + entry fees + penalties - rewards paid (all observed by the handler).
+    /// @dev Property (non-zero-sum, a core design principle of the spec): rewards come only from fees.
+    ///        rewards paid <= premium + entry fees + penalties
+    ///        srpBalance   == premium + entry fees + penalties - rewards paid   (exact, from ghosts)
+    ///      The equality already implies the inequality; the inequality is kept because it states
+    ///      the design principle directly.
+    ///      Catches: rewards paid out of principal, fees not reaching the SRP, payouts not deducted.
     function invariant_rewardsBoundedByFees() public view {
         for (uint256 i = 0; i < markets.length; i++) {
             BeliefMarket market = markets[i];
@@ -143,6 +197,9 @@ contract SeriousInvariantTest is Test {
         }
     }
 
+    /// @dev Coverage report: how many calls took each path, so we can see every path is reached.
+    ///      Shows the LAST run only: handler state, counters included, resets between runs.
+    ///      The Calls/Reverts table Foundry prints is the total across all runs.
     function afterInvariant() external view {
         console.log("commit       ", handler.calls("commit"));
         console.log("withdraw     ", handler.calls("withdraw"));
@@ -162,6 +219,8 @@ contract SeriousInvariantTest is Test {
                                  HELPERS
     //////////////////////////////////////////////////////////////*/
 
+    /// @dev The creator is one of the actors (market 0: Alice, market 1: Bob), so the fuzzer can also
+    ///      have a creator stake again in their own market, or in another market.
     function _createMarket(string memory label, Side side) internal {
         address creator = actors[markets.length % actors.length];
         usdc.mint(creator, CREATOR_COMMITMENT);
@@ -177,7 +236,10 @@ contract SeriousInvariantTest is Test {
         creatorSides.push(side);
     }
 
-    /// @dev pending = amount × (ΔA − depositTimestamp × ΔB) / RAY, without the minRewardDuration gate.
+    /// @dev What a position could claim right now, ignoring the minRewardDuration gate.
+    ///        pending = amount x (deltaA - depositTimestamp x deltaB) / RAY
+    ///      A and B are the contract's two reward accumulators; the deltas are measured since the
+    ///      position's last snapshot (taken at deposit or last claim).
     function _owedUngated(BeliefMarket market, uint256 positionId) internal view returns (uint256) {
         Position memory pos = market.getPosition(positionId);
         uint256 dA = market.rewardPerPrincipalTime() - market.positionRewardPerPrincipalTimePaid(positionId);
